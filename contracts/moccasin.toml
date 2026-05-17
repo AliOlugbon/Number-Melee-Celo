@@ -1,0 +1,18 @@
+[project]
+src = "src"
+
+[networks.celo]
+url = "https://forno.celo.org"
+chain_id = 42220
+default_account_name = "minideploy1"
+
+[networks.celo-alfajores]
+url = "http://alfajores-forno.celo-testnet.org"
+chain_id = 44787
+default_account = { keystore = "~/.moccasin/keystore/minideploy1.json" }
+
+[contracts.NumberMelee]
+path = "src/NumberMelee.vy"
+deployer_script = "script/deploy.py"
+
+# You can view all configuration options at https://cyfrin.github.io/moccasin/all_moccasin_toml_parameters.html

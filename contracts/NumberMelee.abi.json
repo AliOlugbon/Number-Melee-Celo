@@ -1,0 +1,469 @@
+[
+  {
+    "name": "RoundOpened",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8",
+        "indexed": true
+      },
+      {
+        "name": "round_id",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "opener",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "PlayerJoined",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8",
+        "indexed": true
+      },
+      {
+        "name": "round_id",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "player",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "count",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "RoundStarted",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8",
+        "indexed": true
+      },
+      {
+        "name": "round_id",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "commitment",
+        "type": "bytes32",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "RoundWon",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8",
+        "indexed": true
+      },
+      {
+        "name": "round_id",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "winner",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "number_scaled",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "salt",
+        "type": "bytes32",
+        "indexed": false
+      },
+      {
+        "name": "total_players",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "MedalAwarded",
+    "inputs": [
+      {
+        "name": "player",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "tier",
+        "type": "uint8",
+        "indexed": true
+      },
+      {
+        "name": "silver",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "gold",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "diamond",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "RoundAborted",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8",
+        "indexed": true
+      },
+      {
+        "name": "round_id",
+        "type": "uint256",
+        "indexed": true
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "join",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "start_round",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8"
+      },
+      {
+        "name": "commitment",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "reveal_win",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8"
+      },
+      {
+        "name": "winner",
+        "type": "address"
+      },
+      {
+        "name": "number_scaled",
+        "type": "uint256"
+      },
+      {
+        "name": "salt",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "abort_round",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "transfer_ownership",
+    "inputs": [
+      {
+        "name": "new_owner",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "get_round",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint8"
+      },
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "get_medals",
+    "inputs": [
+      {
+        "name": "player",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "is_joined",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8"
+      },
+      {
+        "name": "player",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "max_players",
+    "inputs": [
+      {
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "owner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "rounds",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "uint8"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "commitment",
+            "type": "bytes32"
+          },
+          {
+            "name": "player_count",
+            "type": "uint256"
+          },
+          {
+            "name": "phase",
+            "type": "uint8"
+          },
+          {
+            "name": "winner",
+            "type": "address"
+          },
+          {
+            "name": "number_scaled",
+            "type": "uint256"
+          },
+          {
+            "name": "salt",
+            "type": "bytes32"
+          },
+          {
+            "name": "opened_at",
+            "type": "uint256"
+          },
+          {
+            "name": "started_at",
+            "type": "uint256"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "round_ids",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "uint8"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "has_joined",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "uint8"
+      },
+      {
+        "name": "arg1",
+        "type": "uint256"
+      },
+      {
+        "name": "arg2",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "medals",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "silver",
+            "type": "uint256"
+          },
+          {
+            "name": "gold",
+            "type": "uint256"
+          },
+          {
+            "name": "diamond",
+            "type": "uint256"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "constructor",
+    "inputs": [],
+    "outputs": []
+  }
+]
