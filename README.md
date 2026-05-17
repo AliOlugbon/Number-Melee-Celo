@@ -59,4 +59,3 @@ npm run dev
 - Auto-detects `window.ethereum.isMiniPay` on load → silent connect, no popup
 - `join()` tx has no `feeCurrency` — it's a pure gas tx, no cUSD needed
 - Guesses are free HTTP calls — zero wallet interaction per guess
-- 
