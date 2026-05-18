@@ -163,7 +163,7 @@ def poll_events():
 def handle_round_opened_events(from_block, to_block):
     try:
         logs = contract.events.RoundOpened().get_logs(
-            fromBlock=from_block, toBlock=to_block)
+            from_block=from_block, to_block=to_block)
         for log in logs:
             tier     = log["args"]["tier"]
             round_id = log["args"]["round_id"]
@@ -181,7 +181,7 @@ def handle_round_opened_events(from_block, to_block):
 def handle_player_joined_events(from_block, to_block):
     try:
         logs = contract.events.PlayerJoined().get_logs(
-            fromBlock=from_block, toBlock=to_block)
+            from_block=from_block, to_block=to_block)
         for log in logs:
             tier   = log["args"]["tier"]
             count  = log["args"]["count"]
@@ -200,7 +200,7 @@ def handle_round_won_events(from_block, to_block):
     """Clear state after a win is confirmed on-chain."""
     try:
         logs = contract.events.RoundWon().get_logs(
-            fromBlock=from_block, toBlock=to_block)
+            from_block=from_block, to_block=to_block)
         for log in logs:
             tier   = log["args"]["tier"]
             winner = log["args"]["winner"]
@@ -361,7 +361,7 @@ def api_leaderboard():
         # In production: replace with a DB cache updated by event listener
         from_block = max(0, w3.eth.block_number - 50000)  # last ~50k blocks
         logs = contract.events.MedalAwarded().get_logs(
-            fromBlock=from_block, toBlock="latest")
+            from_block=from_block, to_block="latest")
 
         # Most recent MedalAwarded per player has their cumulative total
         # (contract emits cumulative counts, not deltas)

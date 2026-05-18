@@ -13,8 +13,11 @@ import ParticleCanvas from "./components/ParticleCanvas.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
 
 function GameApp() {
+  // MiniPay auto-connect — runs once on mount
   useMiniPay();
+  // Chain polling — runs regardless of wallet (shows join button before connect)
   useChainSync();
+  // History polling — only active during live rounds
   useHistoryPoll();
 
   const { activeTab } = useStore();

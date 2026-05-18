@@ -1,8 +1,9 @@
 import { create } from "zustand";
 
+// phase: null=not loaded yet, 0=lobby, 1=active, 2=done
 const defaultTierState = () => ({
   roundId:     0n,
-  phase:       null,    // null=unknown 0=lobby 1=active 2=done
+  phase:       null,
   playerCount: 0,
   startedAt:   0n,
   joined:      false,
@@ -11,26 +12,28 @@ const defaultTierState = () => ({
 
 export const useStore = create((set, get) => ({
   // ── Wallet ─────────────────────────────────────────────────────────────────
-  account:   null,
-  pubClient: null,
-  walClient: null,
-  isMiniPay: false,
+  account:      null,
+  pubClient:    null,
+  walClient:    null,
+  isMiniPay:    false,
+  autoConnecting: false,
 
   setWallet: ({ account, pubClient, walClient }) =>
     set({ account, pubClient, walClient }),
-  setIsMiniPay: (v) => set({ isMiniPay: v }),
+  setIsMiniPay:    (v) => set({ isMiniPay: v }),
+  setAutoConnecting:(v) => set({ autoConnecting: v }),
 
   // ── Navigation ─────────────────────────────────────────────────────────────
-  activeTier: 0,         // 0=Silver 1=Gold 2=Diamond
-  activeTab:  "play",    // "play" | "leaderboard"
+  activeTier: 0,
+  activeTab:  "play",
 
   setActiveTier: (tier) =>
     set({
       activeTier: tier,
-      hint: { type: "", icon: "●", msg: "Waiting for round…" },
-      digits: ["?", "?", "?", "?"],
-      digitClass: "idle",
-      history: [],
+      hint:        { type: "", icon: "●", msg: "Waiting for round…" },
+      digits:      ["?", "?", "?", "?"],
+      digitClass:  "idle",
+      history:     [],
       histFetched: 0,
     }),
   setActiveTab: (tab) => set({ activeTab: tab }),
@@ -58,9 +61,9 @@ export const useStore = create((set, get) => ({
 
   resetDisplay: () =>
     set({
-      digits: ["?", "?", "?", "?"],
+      digits:     ["?", "?", "?", "?"],
       digitClass: "idle",
-      hint: { type: "", icon: "●", msg: "Waiting for round…" },
+      hint:       { type: "", icon: "●", msg: "Waiting for round…" },
     }),
 
   // ── Hint ───────────────────────────────────────────────────────────────────
@@ -96,7 +99,8 @@ export const useStore = create((set, get) => ({
   setMyMedals: (m) => set({ myMedals: m }),
 
   // ── Leaderboard ────────────────────────────────────────────────────────────
-  leaderboard:     [],
+  leaderboard:      [],
   leaderboardTotal: 0,
-  setLeaderboard: (players, total) => set({ leaderboard: players, leaderboardTotal: total }),
+  setLeaderboard: (players, total) =>
+    set({ leaderboard: players, leaderboardTotal: total }),
 }));

@@ -1,69 +1,100 @@
 import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion } from "motion/react";
 import { useStore } from "../store/useStore.js";
-import { useMiniPay } from "../hooks/useMiniPay.js";
 import { makePublicClient, makeWalletClient } from "../lib/viem.js";
 import { CONTRACT_ADDRESS, ABI, TIERS } from "../lib/contracts.js";
 import { sendGuess } from "../lib/api.js";
-import { burst } from "./ParticleCanvas.jsx";
 
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 export default function ActionPanel() {
   const {
-    account, pubClient, walClient, activeTier, tiers,
-    setHint, setDigits, updateTier, addFeed, startCooldown, cooldownEnd,
+    account, pubClient, walClient,
+    isMiniPay, autoConnecting,
+    activeTier, tiers,
+    setHint, setDigits, updateTier, addFeed,
+    startCooldown, cooldownEnd,
   } = useStore();
-  const { connect, autoConnecting } = useMiniPay();
 
-  const [joining,    setJoining]   = useState(false);
-  const [guessing,   setGuessing]  = useState(false);
-  const [guessVal,   setGuessVal]  = useState("");
-  const [wonData,    setWonData]   = useState(null);
+  const [joining,    setJoining]    = useState(false);
+  const [guessing,   setGuessing]   = useState(false);
+  const [guessVal,   setGuessVal]   = useState("");
+  const [wonData,    setWonData]    = useState(null);
   const [connecting, setConnecting] = useState(false);
 
   const tier      = TIERS[activeTier];
   const tierState = tiers[activeTier];
   const phase     = tierState?.phase;
-  const joined    = tierState?.joined;
-  const isCooling = cooldownEnd && Date.now() < cooldownEnd;
+  const joined    = tierState?.joined ?? false;
+  const isCooling = cooldownEnd > 0 && Date.now() < cooldownEnd;
 
-  // Listen for win
+  // Listen for win event
   useEffect(() => {
-    const handler = () => setWonData(window.__numduel_won);
+    const handler = () => setWonData({ ...window.__numduel_won });
     window.addEventListener("numduel:won", handler);
     return () => window.removeEventListener("numduel:won", handler);
   }, []);
 
-  // Reset won when tier changes
-  useEffect(() => { setWonData(null); setGuessVal(""); }, [activeTier]);
+  // Reset when switching tiers
+  useEffect(() => {
+    setWonData(null);
+    setGuessVal("");
+  }, [activeTier]);
 
   function getPub() { return pubClient || makePublicClient(); }
-  function getWal() { return walClient || makeWalletClient(account); }
+  function getWal() {
+    if (walClient) return walClient;
+    if (!account) throw new Error("Wallet not connected");
+    return makeWalletClient(account);
+  }
 
-  // ── JOIN (pure gas tx — no value transfer) ─────────────────────────────────
+  // ── CONNECT ────────────────────────────────────────────────────────────────
+  async function handleConnect() {
+    setConnecting(true);
+    try {
+      if (!window.ethereum) throw new Error("No wallet found. Use MiniPay or MetaMask.");
+      const accs = await window.ethereum.request({ method: "eth_requestAccounts" });
+      const { getAddress } = await import("viem");
+      const { makePublicClient: mkPub, makeWalletClient: mkWal } =
+        await import("../lib/viem.js");
+      const acc = getAddress(accs[0]);
+      useStore.getState().setWallet({
+        account: acc,
+        pubClient: mkPub(),
+        walClient: mkWal(acc),
+      });
+      addFeed("🔗", "Wallet", `${acc.slice(0, 6)}…${acc.slice(-4)} connected`);
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  // ── JOIN ───────────────────────────────────────────────────────────────────
   async function handleJoin() {
+    if (!account) { handleConnect(); return; }
     setJoining(true);
     try {
       const pub = getPub();
       const wal = getWal();
-      const h = await wal.writeContract({
-        address: CONTRACT_ADDRESS, abi: ABI,
-        functionName: "join", args: [activeTier],
-        // No feeCurrency needed — no cUSD payment
-        // But MiniPay still works fine with plain gas txs
+      const hash = await wal.writeContract({
+        address:      CONTRACT_ADDRESS,
+        abi:          ABI,
+        functionName: "join",
+        args:         [activeTier],
       });
-      await pub.waitForTransactionReceipt({ hash: h });
+      await pub.waitForTransactionReceipt({ hash });
       updateTier(activeTier, { joined: true });
       addFeed("👤", short(account), `joined ${tier.name} challenge`);
     } catch (e) {
-      alert(e.shortMessage || e.message);
+      alert(e.shortMessage || e.message || "Transaction failed");
     } finally {
       setJoining(false);
     }
   }
 
-  // ── GUESS (free HTTP — no tx at all) ──────────────────────────────────────
+  // ── GUESS ──────────────────────────────────────────────────────────────────
   async function handleGuess() {
     const val = parseFloat(guessVal);
     if (isNaN(val) || val < 10 || val > 99.99) {
@@ -91,40 +122,31 @@ export default function ActionPanel() {
         addFeed("✅", short(account), `${disp} → CORRECT!`);
       }
     } catch (e) {
-      if (e.status === 429) startCooldown(Math.ceil(e.data?.wait_seconds || 5));
-      else alert(e.message);
+      if (e.status === 429) {
+        startCooldown(Math.ceil(e.data?.wait_seconds || 5));
+      } else {
+        alert(e.message || "Guess failed");
+      }
     } finally {
       setGuessing(false);
     }
   }
 
-  // ── States ─────────────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // RENDER STATES
+  // ══════════════════════════════════════════════════════════════════════════
 
-  if (!account) return (
-    <Panel>
-      {autoConnecting ? (
-        <><div className="ring" /><p className="ap-hint">Connecting wallet…</p></>
-      ) : (
-        <>
-          <p className="ap-hint">Connect your wallet to play — no deposit required</p>
-          <button className="btn-primary" disabled={connecting} onClick={async () => {
-            setConnecting(true);
-            try { await connect(); } catch (e) { alert(e.message); }
-            finally { setConnecting(false); }
-          }}>{connecting ? "Connecting…" : "Connect Wallet"}</button>
-          <p className="ap-micro">MiniPay supported · Celo network · just gas</p>
-        </>
-      )}
-    </Panel>
+  // ── Loading: phase not yet known ──────────────────────────────────────────
+  if (phase === null) return (
+    <Wrap>
+      <div className="ring" />
+      <p className="ap-hint">Loading round status…</p>
+    </Wrap>
   );
 
-  if (phase === null || phase === undefined) return (
-    <Panel><div className="ring" /><p className="ap-hint">Loading round…</p></Panel>
-  );
-
-  // Won
+  // ── Won ───────────────────────────────────────────────────────────────────
   if (wonData) return (
-    <Panel>
+    <Wrap>
       <motion.div className="won-medal"
         animate={{ rotate: [-10, 10, -10], scale: [1, 1.1, 1] }}
         transition={{ repeat: Infinity, duration: 1.2 }}>
@@ -132,112 +154,158 @@ export default function ActionPanel() {
       </motion.div>
       <div className="won-title">YOU WON a {tier.name} Medal!</div>
       <p className="won-detail">
-        The number was {wonData.number}.{"\n"}
-        {wonData.medal} medal added to your record!
+        {`The number was ${wonData.number}.\n${wonData.medal} medal added to your record!`}
       </p>
       <button className="btn-outline" onClick={() => {
         setWonData(null);
         updateTier(activeTier, { myGuesses: 0 });
       }}>Play Again</button>
-    </Panel>
+    </Wrap>
   );
 
-  // Round concluded
-  if (phase === 2) return (
-    <Panel>
-      <div className="ap-icon">🔄</div>
-      <p className="ap-hint">Round concluded! The next lobby opens automatically when someone joins.</p>
-      {!joined && (
-        <button className="btn-primary" disabled={joining} onClick={handleJoin}>
-          {joining ? "Opening lobby…" : `Open ${tier.name} Lobby`}
-        </button>
-      )}
-      <p className="ap-micro">You pay only gas — no deposit</p>
-    </Panel>
-  );
-
-  // Lobby — not joined yet
-  if (!joined) return (
-    <Panel>
-      <div className="join-card" style={{ "--t-accent": tier.accent }}>
-        <div className="jc-medal">{tier.emoji}</div>
-        <div className="jc-name">{tier.name} Challenge</div>
-        <div className="jc-detail">
-          <span>Max players</span><span>{tier.maxPlayers}</span>
-        </div>
-        <div className="jc-detail">
-          <span>Players joined</span><span>{tierState.playerCount}/{tier.maxPlayers}</span>
-        </div>
-        <div className="jc-detail">
-          <span>Entry fee</span><span className="green">Free 🎉</span>
-        </div>
-        <div className="jc-note">
-          {phase === 0
-            ? tierState.playerCount < 2
-              ? "Be the 2nd player to start the game!"
-              : "Waiting for game to start…"
-            : "Round in progress — join now!"}
-        </div>
-      </div>
-      <button className="btn-primary" disabled={joining} onClick={handleJoin}
-        style={{ "--btn-bg": tier.accent }}>
-        {joining ? "Joining…" : `Join ${tier.name} Challenge`}
-      </button>
-      <p className="ap-micro">One gas tx to join · all guesses are free</p>
-    </Panel>
-  );
-
-  // Lobby — joined, waiting for 2nd player
-  if (phase === 0) return (
-    <Panel>
-      <div className="ring" />
-      <p className="ap-hint">
-        You're in the {tier.name} lobby!{" "}
-        {tierState.playerCount < 2
-          ? "Waiting for one more player to start…"
-          : "Starting game…"}
-      </p>
-      <div className="player-pip-row">
-        {Array.from({ length: tier.maxPlayers }).map((_, i) => (
-          <span key={i} className={`pip${i < tierState.playerCount ? " filled" : ""}`} />
-        ))}
-      </div>
-      <p className="ap-micro">{tierState.playerCount}/{tier.maxPlayers} players</p>
-    </Panel>
-  );
-
-  // Active — guess
-  return (
-    <Panel>
+  // ── Active round + joined → GUESS INPUT ───────────────────────────────────
+  if (phase === 1 && joined) return (
+    <Wrap>
       <div className="guess-row">
         <input
           className="guess-inp"
-          type="number" min="10" max="99.99" step="0.01"
-          placeholder="e.g. 42.75"
+          type="number"
+          min="10" max="99.99" step="0.01"
+          placeholder="10.00 – 99.99"
           value={guessVal}
           onChange={(e) => setGuessVal(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !guessing && !isCooling && handleGuess()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !guessing && !isCooling) handleGuess();
+          }}
+          autoFocus
         />
         <button
           className="btn-fire"
-          disabled={guessing || !!isCooling}
-          onClick={handleGuess}
           style={{ "--fire-bg": tier.accent }}
+          disabled={guessing || isCooling}
+          onClick={handleGuess}
         >
           {guessing ? "…" : "FIRE"}
         </button>
       </div>
       <p className="ap-micro">
-        Free · no gas · Enter to guess · {tierState.playerCount} players competing
+        Free · no gas · {tierState.playerCount} players · Enter to fire
       </p>
-    </Panel>
+    </Wrap>
+  );
+
+  // ── Active round + NOT joined → Late-join ─────────────────────────────────
+  if (phase === 1 && !joined) return (
+    <Wrap>
+      <div className="join-card" style={{ "--t-accent": tier.accent }}>
+        <div className="jc-medal">{tier.emoji}</div>
+        <div className="jc-name">{tier.name} — Round in Progress</div>
+        <div className="jc-detail"><span>Players</span><span>{tierState.playerCount}/{tier.maxPlayers}</span></div>
+        <div className="jc-detail"><span>Entry fee</span><span className="green">Free 🎉</span></div>
+        <div className="jc-note">Join now and start guessing immediately!</div>
+      </div>
+      {!account ? (
+        <button className="btn-primary" disabled={connecting || autoConnecting}
+          style={{ "--btn-bg": tier.accent }} onClick={handleConnect}>
+          {connecting || autoConnecting ? "Connecting…" : "Connect & Join"}
+        </button>
+      ) : (
+        <button className="btn-primary" disabled={joining}
+          style={{ "--btn-bg": tier.accent }} onClick={handleJoin}>
+          {joining ? "Joining…" : `Join ${tier.name} Round`}
+        </button>
+      )}
+      <p className="ap-micro">One gas tx · all guesses are free</p>
+    </Wrap>
+  );
+
+  // ── Lobby: joined, waiting for game to start ───────────────────────────────
+  if (phase === 0 && joined) return (
+    <Wrap>
+      <div className="ring" />
+      <p className="ap-hint">
+        You're in! Waiting for one more player…
+      </p>
+      <div className="player-pip-row">
+        {Array.from({ length: Math.min(tier.maxPlayers, 10) }).map((_, i) => (
+          <span key={i} className={`pip${i < tierState.playerCount ? " filled" : ""}`} />
+        ))}
+        {tier.maxPlayers > 10 && (
+          <span className="ap-micro">+{tier.maxPlayers - 10} more slots</span>
+        )}
+      </div>
+      <p className="ap-micro">{tierState.playerCount}/{tier.maxPlayers} players joined</p>
+    </Wrap>
+  );
+
+  // ── Lobby: not joined yet ──────────────────────────────────────────────────
+  if (phase === 0 && !joined) return (
+    <Wrap>
+      <div className="join-card" style={{ "--t-accent": tier.accent }}>
+        <div className="jc-medal">{tier.emoji}</div>
+        <div className="jc-name">{tier.name} Challenge</div>
+        <div className="jc-detail"><span>Max players</span><span>{tier.maxPlayers}</span></div>
+        <div className="jc-detail"><span>Joined so far</span><span>{tierState.playerCount}/{tier.maxPlayers}</span></div>
+        <div className="jc-detail"><span>Entry fee</span><span className="green">Free 🎉</span></div>
+        <div className="jc-note">
+          {tierState.playerCount < 2
+            ? "Be the 2nd player to trigger the game start!"
+            : "Game starts when 2+ players join — round in lobby!"}
+        </div>
+      </div>
+      {!account ? (
+        <button className="btn-primary" disabled={connecting || autoConnecting}
+          style={{ "--btn-bg": tier.accent }} onClick={handleConnect}>
+          {connecting || autoConnecting ? "Connecting…" : "Connect Wallet to Join"}
+        </button>
+      ) : (
+        <button className="btn-primary" disabled={joining}
+          style={{ "--btn-bg": tier.accent }} onClick={handleJoin}>
+          {joining ? "Joining…" : `Join ${tier.name} Challenge`}
+        </button>
+      )}
+      <p className="ap-micro">One gas tx to join · all guesses are free</p>
+    </Wrap>
+  );
+
+  // ── Phase 2 / No round: show join to open a new lobby ─────────────────────
+  return (
+    <Wrap>
+      <div className="ap-icon">{tier.emoji}</div>
+      <p className="ap-hint">
+        {tierState.playerCount === 0
+          ? `No ${tier.name} round is open. Be the first to start the lobby!`
+          : `The last ${tier.name} round has ended.`}
+      </p>
+      {!account ? (
+        <>
+          <button className="btn-primary" disabled={connecting || autoConnecting}
+            style={{ "--btn-bg": tier.accent }} onClick={handleConnect}>
+            {connecting || autoConnecting ? "Connecting…" : "Connect Wallet to Play"}
+          </button>
+          <p className="ap-micro">MiniPay supported · Celo network · just gas</p>
+        </>
+      ) : (
+        <>
+          <button className="btn-primary" disabled={joining}
+            style={{ "--btn-bg": tier.accent }} onClick={handleJoin}>
+            {joining ? "Opening lobby…" : `Open ${tier.name} Lobby`}
+          </button>
+          <p className="ap-micro">You pay only gas — no deposit required</p>
+        </>
+      )}
+    </Wrap>
   );
 }
 
-function Panel({ children }) {
+function Wrap({ children }) {
   return (
-    <motion.div className="action-panel ap-block"
-      initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
+    <motion.div
+      className="action-panel ap-block"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+    >
       {children}
     </motion.div>
   );
