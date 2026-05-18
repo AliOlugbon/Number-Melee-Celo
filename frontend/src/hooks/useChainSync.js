@@ -16,100 +16,101 @@ export function useChainSync() {
 
   const lastBlockRef = useRef(0n);
   const timerRef     = useRef(null);
-  const pubRef       = useRef(null);
+  // Stable pub client reference — don't recreate on every render
+  const pubRef = useRef(null);
 
-  // Keep a stable ref to the public client — recreate only when needed
-  if (!pubRef.current) pubRef.current = makePublicClient();
-  const pub = pubClient || pubRef.current;
+  function getPub() {
+    if (pubClient) return pubClient;
+    if (!pubRef.current) pubRef.current = makePublicClient();
+    return pubRef.current;
+  }
 
   const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const sc2s  = (s) => (Number(s) / 100).toFixed(2);
 
-  // ── Fetch tier state from chain ────────────────────────────────────────────
+  // ── Read one tier from chain ────────────────────────────────────────────────
   const refreshTier = useCallback(async (tier) => {
-    // Bail out if contract address is still the placeholder
+    const pub = getPub();
+
     if (CONTRACT_ADDRESS === "0x0000000000000000000000000000000000000000") {
-      // Set phase to 2 (done/no round) so UI shows the join button
-      updateTier(tier, { phase: 2, playerCount: 0 });
+      updateTier(tier, { phase: 2, playerCount: 0, roundId: 0n });
       return;
     }
+
     try {
       const info = await pub.readContract({
-        address: CONTRACT_ADDRESS,
-        abi: ABI,
-        functionName: "get_round",
-        args: [tier],
+        address: CONTRACT_ADDRESS, abi: ABI,
+        functionName: "get_round", args: [tier],
       });
-      // returns (round_id, phase, player_count, started_at)
-      // If round_id is 0 and phase is 0, no round has ever been opened
       const roundId     = info[0];
-      const phase       = Number(info[1]);
+      const rawPhase    = Number(info[1]);
       const playerCount = Number(info[2]);
       const startedAt   = info[3];
 
-      const patch = {
-        roundId,
-        // If round_id == 0 and phase == 0, treat as "no round yet" → show join to open
-        phase:       (roundId === 0n && phase === 0) ? 2 : phase,
-        playerCount,
-        startedAt,
-      };
+      // round_id==0 && phase==0 → no round ever opened
+      const phase = (roundId === 0n && rawPhase === 0) ? 2 : rawPhase;
+
+      const patch = { roundId, phase, playerCount, startedAt };
 
       if (account) {
         try {
           patch.joined = await pub.readContract({
-            address: CONTRACT_ADDRESS,
-            abi: ABI,
-            functionName: "is_joined",
-            args: [tier, account],
+            address: CONTRACT_ADDRESS, abi: ABI,
+            functionName: "is_joined", args: [tier, account],
           });
-        } catch { patch.joined = false; }
+        } catch {
+          patch.joined = false;
+        }
       }
 
       updateTier(tier, patch);
     } catch (e) {
-      console.warn("refreshTier error:", e.shortMessage || e.message);
-      // On error, show join button (phase=2) rather than infinite spinner
+      console.warn("refreshTier:", e.shortMessage || e.message);
+      // On RPC error fall back to "no round" state to show join button
       updateTier(tier, { phase: 2, playerCount: 0 });
     }
-  }, [pub, account, updateTier]);
+  }, [account, updateTier, pubClient]);
 
-  // ── Medals ────────────────────────────────────────────────────────────────
-  const refreshMedals = useCallback(async () => {
-    if (!account) return;
-    try {
-      const m = await fetchMedals(account);
-      setMyMedals({ silver: m.silver || 0, gold: m.gold || 0, diamond: m.diamond || 0 });
-    } catch {}
-  }, [account, setMyMedals]);
-
-  // ── Event handler (called from scanEvents) ─────────────────────────────────
+  // ── Event handler ──────────────────────────────────────────────────────────
   function handleEvent(name, args) {
     const { activeTier: at, account: acc } = useStore.getState();
     const tier = Number(args.tier ?? -1);
     if (tier < 0 || tier > 2) return;
 
     switch (name) {
+
       case "RoundOpened":
-        updateTier(tier, { phase: 0, playerCount: 1, roundId: args.round_id });
+        updateTier(tier, {
+          phase: 0,
+          playerCount: 1,
+          roundId: args.round_id,
+          joined: false,
+        });
         if (tier === at) {
           resetDisplay();
           clearHistory();
-          addFeed("🎮", "SYSTEM", `${["Silver","Gold","Diamond"][tier]} lobby opened!`);
+          addFeed("🎮", "SYSTEM", `${["🥈 Silver","🥇 Gold","💎 Diamond"][tier]} lobby opened!`);
         }
         break;
 
-      case "PlayerJoined":
-        updateTier(tier, { playerCount: Number(args.count) });
-        if (tier === at)
-          addFeed("👤", short(args.player), `joined (${args.count} players)`);
+      case "PlayerJoined": {
+        const newCount = Number(args.count);
+        updateTier(tier, { playerCount: newCount });
+        if (tier === at) {
+          addFeed("👤", short(args.player), `joined (${newCount} players)`);
+        }
+        // Mark as joined if it's our account
+        if (acc && args.player.toLowerCase() === acc.toLowerCase()) {
+          updateTier(tier, { joined: true });
+        }
         break;
+      }
 
       case "RoundStarted":
         updateTier(tier, { phase: 1 });
         if (tier === at) {
           setHint("", "🎲", "Round started! Submit your first guess.");
-          addFeed("🚀", "SYSTEM", `${["Silver","Gold","Diamond"][tier]} game is live!`);
+          addFeed("🚀", "SYSTEM", `${["Silver","Gold","Diamond"][tier]} is LIVE!`);
         }
         break;
 
@@ -117,15 +118,23 @@ export function useChainSync() {
         updateTier(tier, { phase: 2 });
         if (tier !== at) break;
         revealNumber(args.number_scaled);
-        addFeed("🏆", short(args.winner), `WON! Number: ${sc2s(args.number_scaled)}`, "win");
+        addFeed("🏆", short(args.winner), `WON! The number was ${sc2s(args.number_scaled)}`, "win");
         const isMe = acc && args.winner.toLowerCase() === acc.toLowerCase();
         if (isMe) {
           const medal = ["🥈 Silver","🥇 Gold","💎 Diamond"][tier];
-          window.__numduel_won = { number: sc2s(args.number_scaled), medal, tier };
+          window.__numduel_won = {
+            number: sc2s(args.number_scaled),
+            medal,
+            tier,
+          };
           window.dispatchEvent(new CustomEvent("numduel:won"));
-          refreshMedals();
+          // Refresh medals after win
+          if (account) fetchMedals(account)
+            .then((m) => setMyMedals({ silver: m.silver||0, gold: m.gold||0, diamond: m.diamond||0 }))
+            .catch(() => {});
         } else {
-          setHint("solved", "🏆", `${short(args.winner)} won! The number was ${sc2s(args.number_scaled)}`);
+          setHint("solved", "🏆",
+            `${short(args.winner)} won! Number was ${sc2s(args.number_scaled)}`);
         }
         break;
       }
@@ -134,25 +143,28 @@ export function useChainSync() {
         updateTier(tier, { phase: 2 });
         if (tier === at) {
           resetDisplay();
-          addFeed("⚠️", "SYSTEM", "Round aborted.");
+          addFeed("⚠️", "SYSTEM", `Round aborted.`);
         }
         break;
     }
   }
 
-  // ── Scan new blocks for events ─────────────────────────────────────────────
+  // ── Scan new events ─────────────────────────────────────────────────────────
   const scanEvents = useCallback(async () => {
     if (CONTRACT_ADDRESS === "0x0000000000000000000000000000000000000000") return;
+    const pub = getPub();
     try {
       const latest = await pub.getBlockNumber();
-      if (lastBlockRef.current === 0n)
-        lastBlockRef.current = latest > 300n ? latest - 300n : 0n;
+      if (lastBlockRef.current === 0n) {
+        // On first run, look back 200 blocks to catch recent activity
+        lastBlockRef.current = latest > 200n ? latest - 200n : 0n;
+      }
       if (latest <= lastBlockRef.current) return;
 
       const logs = await pub.getLogs({
-        address: CONTRACT_ADDRESS,
+        address:   CONTRACT_ADDRESS,
         fromBlock: lastBlockRef.current + 1n,
-        toBlock: latest,
+        toBlock:   latest,
       });
       lastBlockRef.current = latest;
 
@@ -167,22 +179,26 @@ export function useChainSync() {
     } catch (e) {
       console.warn("scanEvents:", e.shortMessage || e.message);
     }
-  }, [pub]);
+  }, [pubClient]);
 
-  // ── Main poll loop — runs regardless of wallet connection ──────────────────
+  // ── Poll loop — starts immediately, no wallet required ────────────────────
   useEffect(() => {
     async function tick() {
       await refreshTier(activeTier);
       await scanEvents();
     }
 
-    tick(); // immediate first load
+    tick(); // immediate
+    clearInterval(timerRef.current);
     timerRef.current = setInterval(tick, POLL_MS);
     return () => clearInterval(timerRef.current);
-  }, [activeTier, account]); // re-run when tier changes OR wallet connects
+  }, [activeTier, account]); // restart when tier or wallet changes
 
-  // ── Medals on wallet connect ───────────────────────────────────────────────
+  // ── Load medals when wallet connects ──────────────────────────────────────
   useEffect(() => {
-    if (account) refreshMedals();
+    if (!account) return;
+    fetchMedals(account)
+      .then((m) => setMyMedals({ silver: m.silver||0, gold: m.gold||0, diamond: m.diamond||0 }))
+      .catch(() => {});
   }, [account]);
 }
