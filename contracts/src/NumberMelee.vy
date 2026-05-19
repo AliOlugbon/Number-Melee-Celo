@@ -1,44 +1,53 @@
 # @version ^0.4.0
+# @title   NumberMelee
+# @license MIT
+# @author  Ali Malik - aliolugbon@gmail.com
 
 # ─── Constants ─────────────────────────────────────────────────────────────────
 
-MAX_PLAYERS: constant(uint256[3]) = [25, 18, 10]   # Silver, Gold, Diamond
+MAX_PLAYERS:  constant(uint256) = 100
+
+SOLO_TIMEOUT: constant(uint256) = 300   # 5 min in seconds
+SOLO_DIAMOND: constant(uint256) = 60    # ≤ 1 min → Diamond
+SOLO_GOLD:    constant(uint256) = 180   # ≤ 3 min → Gold
+                                        # > 3 and ≤ 5 min → Silver
+
+MEDAL_SILVER:  constant(uint8) = 0
+MEDAL_GOLD:    constant(uint8) = 1
+MEDAL_DIAMOND: constant(uint8) = 2
 
 # ─── Events ────────────────────────────────────────────────────────────────────
 
 event RoundOpened:
-    tier:     indexed(uint8)
-    round_id: indexed(uint256)
-    opener:   address
+    round_id:   indexed(uint256)
+    opener:     address
+    commitment: bytes32
 
 event PlayerJoined:
-    tier:     indexed(uint8)
     round_id: indexed(uint256)
     player:   indexed(address)
     count:    uint256
 
-event RoundStarted:
-    tier:       indexed(uint8)
-    round_id:   indexed(uint256)
-    commitment: bytes32
+event CompetitiveModeActivated:
+    round_id: indexed(uint256)
+    count:    uint256
 
 event RoundWon:
-    tier:          indexed(uint8)
     round_id:      indexed(uint256)
     winner:        indexed(address)
+    medal:         uint8
     number_scaled: uint256
     salt:          bytes32
     total_players: uint256
 
 event MedalAwarded:
-    player:   indexed(address)
-    tier:     indexed(uint8)    # 0=Silver 1=Gold 2=Diamond
-    silver:   uint256
-    gold:     uint256
-    diamond:  uint256
+    player:  indexed(address)
+    medal:   indexed(uint8)
+    silver:  uint256
+    gold:    uint256
+    diamond: uint256
 
 event RoundAborted:
-    tier:     indexed(uint8)
     round_id: indexed(uint256)
 
 # ─── Structs ───────────────────────────────────────────────────────────────────
@@ -46,12 +55,13 @@ event RoundAborted:
 struct Round:
     commitment:    bytes32
     player_count:  uint256
-    phase:         uint8     # 0=lobby 1=active 2=done
+    phase:         uint8     # 0=solo-lobby  1=competitive  2=done
     winner:        address
-    number_scaled: uint256   # 0 while hidden, revealed on win
+    medal:         uint8
+    number_scaled: uint256   # 0 until revealed
     salt:          bytes32
-    opened_at:     uint256
-    started_at:    uint256
+    opened_at:     uint256   # block.timestamp of first join (solo timer starts)
+    started_at:    uint256   # block.timestamp when phase→1 (competitive)
 
 struct MedalRecord:
     silver:  uint256
@@ -60,16 +70,14 @@ struct MedalRecord:
 
 # ─── Storage ───────────────────────────────────────────────────────────────────
 
-owner:     public(address)
+owner:    public(address)
 
-# One live round per tier
-rounds:    public(HashMap[uint8, Round])
-round_ids: public(HashMap[uint8, uint256])   # monotonic counter per tier
+round:    public(Round)
+round_id: public(uint256)   # monotonic counter; 0 = no round ever opened
 
-# Player membership per round: tier → round_id → player → bool
-has_joined: public(HashMap[uint8, HashMap[uint256, HashMap[address, bool]]])
+# round_id → player → joined
+has_joined: public(HashMap[uint256, HashMap[address, bool]])
 
-# Leaderboard: player → medal counts
 medals: public(HashMap[address, MedalRecord])
 
 # ─── Constructor ───────────────────────────────────────────────────────────────
@@ -78,136 +86,185 @@ medals: public(HashMap[address, MedalRecord])
 def __init__():
     self.owner = msg.sender
 
-# ─── Join (first joiner opens the round) ──────────────────────────────────────
+# ─── Join ──────────────────────────────────────────────────────────────────────
 
 @external
-def join(tier: uint8):
+def join(commitment: bytes32):
     """
-    Join the current round for a tier. No payment required — pure gas tx.
+    Join (or open) the current round. Pure gas tx — no payment.
 
-    - If no round is open (phase 0 or 1), this call opens a fresh lobby
-      and the caller is the first player.
-    - If a lobby (phase 0) or active round (phase 1) is open and not full,
-      the caller joins it.
-    - When the second player joins a lobby, the backend detects PlayerJoined
-      with count==2 and calls start_round() to lock the commitment.
+    Frontend flow before calling this:
+      1. GET /api/commitment  — backend generates secret, returns commitment
+      2. Call join(commitment) on-chain (only for the first joiner)
+      3. Subsequent joiners call join(empty(bytes32)) — ignored on-chain
 
-    tier: 0=Silver 1=Gold 2=Diamond
+    First caller
+    ────────────
+    Opens a new round in phase=0 (solo lobby). Commitment is locked.
+    Emits RoundOpened + PlayerJoined. Solo 5-min timer starts.
+
+    2nd caller  (still within 5 min solo window)
+    ─────────────────────────────────────────────
+    Upgrades round to phase=1 (competitive). Solo timer cancelled.
+    Emits PlayerJoined + CompetitiveModeActivated.
+
+    3rd+ callers  (phase=1 competitive)
+    ─────────────────────────────────────
+    Joins ongoing competitive round up to MAX_PLAYERS.
     """
-    assert tier < 3, "invalid tier"
+    r: Round = self.round
 
-    r:   Round   = self.rounds[tier]
-    rid: uint256 = self.round_ids[tier]
+    # ── Case 1: no live round → open fresh ───────────────────────────────────
+    if self.round_id == 0 or r.phase == 2:
+        assert commitment != empty(bytes32), "commitment required"
 
-    # ── Case 1: no open round → open a new lobby ──────────────────────────────
-    if r.phase == 2 or (rid == 0):
-        self.round_ids[tier] += 1
-        rid = self.round_ids[tier]
+        self.round_id += 1
+        rid: uint256 = self.round_id
 
-        self.rounds[tier] = Round(
-            commitment    = empty(bytes32),
+        self.round = Round(
+            commitment    = commitment,
             player_count  = 1,
             phase         = 0,
             winner        = empty(address),
+            medal         = 0,
             number_scaled = 0,
             salt          = empty(bytes32),
             opened_at     = block.timestamp,
             started_at    = 0,
         )
-        self.has_joined[tier][rid][msg.sender] = True
+        self.has_joined[rid][msg.sender] = True
 
-        log RoundOpened(tier=tier, round_id=rid, opener=msg.sender)
-        log PlayerJoined(tier=tier, round_id=rid, player=msg.sender, count=1)
+        log RoundOpened(round_id=rid, opener=msg.sender, commitment=commitment)
+        log PlayerJoined(round_id=rid, player=msg.sender, count=1)
         return
 
-    # ── Case 2: lobby or active round is open ─────────────────────────────────
+    # ── Case 2: live round (phase 0 or 1) ────────────────────────────────────
+    rid: uint256 = self.round_id
+
     assert r.phase == 0 or r.phase == 1, "no open round"
-    assert not self.has_joined[tier][rid][msg.sender], "already joined"
-    assert r.player_count < MAX_PLAYERS[tier], "round full"
+    assert not self.has_joined[rid][msg.sender], "already joined"
+    assert r.player_count < MAX_PLAYERS,         "round full"
 
-    self.rounds[tier].player_count += 1
-    self.has_joined[tier][rid][msg.sender] = True
-    new_count: uint256 = self.rounds[tier].player_count
+    # Cannot join a solo window that has already timed out
+    if r.phase == 0:
+        assert block.timestamp < r.opened_at + SOLO_TIMEOUT, "solo window expired"
 
-    log PlayerJoined(tier=tier, round_id=rid, player=msg.sender, count=new_count)
+    self.round.player_count += 1
+    self.has_joined[rid][msg.sender] = True
+    new_count: uint256 = self.round.player_count
 
-# ─── Owner: Lock commitment (called when 2nd player joins) ────────────────────
+    log PlayerJoined(round_id=rid, player=msg.sender, count=new_count)
 
-@external
-def start_round(tier: uint8, commitment: bytes32):
-    """
-    Backend calls this once the 2nd player joins.
-    Locks the keccak256(number_scaled, salt) commitment on-chain.
-    From this point guessing begins (via HTTP API — no gas).
-    """
-    assert msg.sender == self.owner, "only owner"
-    assert tier < 3, "invalid tier"
-    assert self.rounds[tier].phase == 0,        "not in lobby"
-    assert self.rounds[tier].player_count >= 2, "need 2 players"
+    # Transition to competitive on 2nd player
+    if new_count == 2:
+        self.round.phase      = 1
+        self.round.started_at = block.timestamp
+        log CompetitiveModeActivated(round_id=rid, count=new_count)
 
-    self.rounds[tier].commitment = commitment
-    self.rounds[tier].phase      = 1
-    self.rounds[tier].started_at = block.timestamp
-
-    log RoundStarted(tier=tier, round_id=self.round_ids[tier], commitment=commitment)
-
-# ─── Owner: Reveal winner, award medal ────────────────────────────────────────
+# ─── Owner: Solo reveal ────────────────────────────────────────────────────────
 
 @external
-def reveal_win(tier: uint8, winner: address, number_scaled: uint256, salt: bytes32):
+def reveal_win(winner: address, number_scaled: uint256, salt: bytes32):
     """
-    Backend calls when someone guesses correctly.
-    1. Verifies the commitment (proves number was never changed).
-    2. Records winner on-chain.
-    3. Increments the winner's medal count.
-    4. Emits MedalAwarded for leaderboard indexers.
-    Round auto-resets: next join() call opens a fresh lobby.
+    Solo-mode reveal. Backend calls when the sole player guesses correctly.
+    Medal derived on-chain from elapsed time:
+      ≤ SOLO_DIAMOND (60 s)  → Diamond
+      ≤ SOLO_GOLD   (180 s)  → Gold
+      ≤ SOLO_TIMEOUT(300 s)  → Silver
+    Reverts if > 5 min (backend must have already called abort_round()).
     """
     assert msg.sender == self.owner, "only owner"
-    assert tier < 3, "invalid tier"
 
-    r:   Round   = self.rounds[tier]
-    rid: uint256 = self.round_ids[tier]
+    r:   Round   = self.round
+    rid: uint256 = self.round_id
 
-    assert r.phase == 1, "round not active"
-    assert self.has_joined[tier][rid][winner], "winner not in round"
-
-    # Verify commitment — number cannot have been changed after round start
+    assert r.phase == 0, "not solo phase"
+    assert self.has_joined[rid][winner],                           "winner not in round"
+    assert block.timestamp <= r.opened_at + SOLO_TIMEOUT,          "solo window expired"
     assert keccak256(abi_encode(number_scaled, salt)) == r.commitment, "commitment mismatch"
 
-    # Record winner
-    self.rounds[tier].phase         = 2
-    self.rounds[tier].winner        = winner
-    self.rounds[tier].number_scaled = number_scaled
-    self.rounds[tier].salt          = salt
+    elapsed: uint256 = block.timestamp - r.opened_at
+    medal: uint8 = MEDAL_SILVER
+    if elapsed <= SOLO_DIAMOND:
+        medal = MEDAL_DIAMOND
+    elif elapsed <= SOLO_GOLD:
+        medal = MEDAL_GOLD
 
-    # Award medal
-    if tier == 0:
-        self.medals[winner].silver += 1
-    elif tier == 1:
-        self.medals[winner].gold += 1
+    self._finalize(winner, medal, number_scaled, salt)
+
+# ─── Owner: Competitive reveal ────────────────────────────────────────────────
+
+@external
+def reveal_win_competitive(winner: address, medal: uint8, number_scaled: uint256, salt: bytes32):
+    """
+    Competitive-mode reveal. Backend resolves proximity off-chain:
+      Exact correct → medal=2 (Diamond)
+      Closest       → medal=1 (Gold)
+      2nd closest   → medal=0 (Silver)
+    Commitment verified on-chain before finalizing.
+    """
+    assert msg.sender == self.owner, "only owner"
+    assert medal < 3,                "invalid medal"
+
+    r:   Round   = self.round
+    rid: uint256 = self.round_id
+
+    assert r.phase == 1, "not competitive phase"
+    assert self.has_joined[rid][winner],                               "winner not in round"
+    assert keccak256(abi_encode(number_scaled, salt)) == r.commitment, "commitment mismatch"
+
+    self._finalize(winner, medal, number_scaled, salt)
+
+# ─── Internal ─────────────────────────────────────────────────────────────────
+
+@internal
+def _finalize(winner: address, medal: uint8, number_scaled: uint256, salt: bytes32):
+    rid: uint256 = self.round_id
+
+    self.round.phase         = 2
+    self.round.winner        = winner
+    self.round.medal         = medal
+    self.round.number_scaled = number_scaled
+    self.round.salt          = salt
+
+    if medal == MEDAL_SILVER:
+        self.medals[winner].silver  += 1
+    elif medal == MEDAL_GOLD:
+        self.medals[winner].gold    += 1
     else:
         self.medals[winner].diamond += 1
 
     m: MedalRecord = self.medals[winner]
-    log RoundWon(tier=tier, round_id=rid, winner=winner, number_scaled=number_scaled, salt=salt, total_players=r.player_count)
-    log MedalAwarded(player=winner, tier=tier, silver=m.silver, gold=m.gold, diamond=m.diamond)
+    log RoundWon(
+        round_id      = rid,
+        winner        = winner,
+        medal         = medal,
+        number_scaled = number_scaled,
+        salt          = salt,
+        total_players = self.round.player_count,
+    )
+    log MedalAwarded(
+        player  = winner,
+        medal   = medal,
+        silver  = m.silver,
+        gold    = m.gold,
+        diamond = m.diamond,
+    )
 
 # ─── Owner: Abort ─────────────────────────────────────────────────────────────
 
 @external
-def abort_round(tier: uint8):
+def abort_round():
     """
-    Abort a lobby or active round (e.g. backend went down mid-round).
-    No refunds needed — no money was collected.
-    Next join() call opens a fresh lobby automatically.
+    Abort solo or competitive round. Called by backend cron on solo timeout
+    or on backend failure. No funds to refund.
+    Next join() opens a fresh round automatically.
     """
     assert msg.sender == self.owner, "only owner"
-    assert tier < 3, "invalid tier"
-    assert self.rounds[tier].phase < 2, "already done"
+    assert self.round.phase < 2,     "already done"
 
-    self.rounds[tier].phase = 2
-    log RoundAborted(tier=tier, round_id=self.round_ids[tier])
+    self.round.phase = 2
+    log RoundAborted(round_id=self.round_id)
 
 # ─── Owner transfer ────────────────────────────────────────────────────────────
 
@@ -221,10 +278,10 @@ def transfer_ownership(new_owner: address):
 
 @view
 @external
-def get_round(tier: uint8) -> (uint256, uint8, uint256, uint256):
-    """(round_id, phase, player_count, started_at)"""
-    r: Round = self.rounds[tier]
-    return self.round_ids[tier], r.phase, r.player_count, r.started_at
+def get_round() -> (uint256, uint8, uint256, uint256, uint256):
+    """(round_id, phase, player_count, opened_at, started_at)"""
+    r: Round = self.round
+    return self.round_id, r.phase, r.player_count, r.opened_at, r.started_at
 
 @view
 @external
@@ -235,12 +292,23 @@ def get_medals(player: address) -> (uint256, uint256, uint256):
 
 @view
 @external
-def is_joined(tier: uint8, player: address) -> bool:
-    rid: uint256 = self.round_ids[tier]
-    return self.has_joined[tier][rid][player]
+def is_joined(player: address) -> bool:
+    return self.has_joined[self.round_id][player]
 
 @view
 @external
-def max_players(tier: uint8) -> uint256:
-    assert tier < 3, "invalid tier"
-    return MAX_PLAYERS[tier]
+def solo_time_remaining() -> uint256:
+    """Seconds left in solo window. Returns 0 if competitive or done."""
+    r: Round = self.round
+    if r.phase != 0:
+        return 0
+    deadline: uint256 = r.opened_at + SOLO_TIMEOUT
+    if block.timestamp >= deadline:
+        return 0
+    return deadline - block.timestamp
+
+@view
+@external
+def get_constants() -> (uint256, uint256, uint256, uint256):
+    """(MAX_PLAYERS, SOLO_DIAMOND_THRESHOLD, SOLO_GOLD_THRESHOLD, SOLO_TIMEOUT)"""
+    return MAX_PLAYERS, SOLO_DIAMOND, SOLO_GOLD, SOLO_TIMEOUT

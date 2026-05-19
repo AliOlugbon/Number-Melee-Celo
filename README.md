@@ -1,61 +1,187 @@
-# Number Melee
+# NumberMelee — Celo MiniPay Number-Guessing Game
 
-Free-to-play on-chain number guessing game. No deposits. No pot. Just medals.
+Number-guessing game on **Celo**, built for **MiniPay**.
+No funds collected — MiniPay uses USDT/cUSD only as the gas-fee token.
 
-## Tiers
-
-| Tier    | Medal | Max Players |
-|---------|-------|-------------|
-| Silver  | 🥈    | 25          |
-| Gold    | 🥇    | 18          |
-| Diamond | 💎    | 10          |
+---
 
 ## How It Works
 
-1. First player to `join(tier)` opens the lobby
-2. Second player joins → backend generates secret number + locks commitment on-chain
-3. All players guess via free HTTP API (no gas, no signing per guess)
-4. 5-second cooldown between guesses per player
-5. Correct guess → backend calls `reveal_win()` → winner gets a medal minted on-chain
-6. Late joiners welcome until max players or round won
-7. Next round opens automatically when someone calls `join()` again
+One live round at a time. Three medals per round.
 
-## Leaderboard
+### Solo Mode _(1 player, phase = 0)_
 
-Scores: 💎 = 3 pts · 🥇 = 2 pts · 🥈 = 1 pt  
-All medals stored permanently on-chain via `MedalAwarded` events.
+First player joins → 5-minute window opens. Backend locks a secret number commitment on-chain at join time. Player guesses via API (no gas). Medal awarded by elapsed time:
 
-## Setup
+| Time elapsed  | Medal                    |
+| ------------- | ------------------------ |
+| ≤ 1 minute    | 💎 Diamond               |
+| 1 – 3 minutes | 🥇 Gold                  |
+| 3 – 5 minutes | 🥈 Silver                |
+| > 5 minutes   | No medal — round aborted |
 
-### 1. Deploy Contract
+### Competitive Mode _(≥ 2 players, phase = 1)_
 
-```bash
-cd deploy
-pip install web3 vyper python-dotenv
-# Set PRIVATE_KEY in backend/.env
-python deploy.py --network alfajores
+When a second player joins, the solo timer cancels and the round becomes a live competition. Backend tracks all guesses off-chain by proximity:
+
+| Result              | Medal      |
+| ------------------- | ---------- |
+| Exact correct guess | 💎 Diamond |
+| Closest guess       | 🥇 Gold    |
+| 2nd closest         | 🥈 Silver  |
+
+---
+
+## Round Lifecycle
+
+```
+GET /api/commitment          ← frontend fetches before join tx
+     │
+     ▼
+join(commitment)             ← first player tx, phase=0 (solo)
+     │
+     ├── 2nd player join() → CompetitiveModeActivated, phase=1
+     │        │
+     │   reveal_win_competitive(winner, medal, num, salt) → phase=2
+     │
+     ├── solo correct guess → reveal_win(winner, num, salt) → phase=2
+     │
+     └── 5 min timeout → abort_round() → phase=2
+              │
+         next join() opens fresh round (round_id++)
 ```
 
-### 2. Start Backend
+---
+
+## Contract API
+
+### Player
+
+```
+join(commitment: bytes32)
+```
+
+First caller passes commitment from `GET /api/commitment`. Subsequent callers pass anything (ignored).
+
+### Backend / Owner
+
+```
+reveal_win(winner, number_scaled, salt)
+```
+
+Solo-mode reveal — medal computed on-chain from elapsed time.
+
+```
+reveal_win_competitive(winner, medal, number_scaled, salt)
+```
+
+Competitive-mode reveal — backend passes medal (0=Silver, 1=Gold, 2=Diamond).
+
+```
+abort_round()
+transfer_ownership(new_owner)
+```
+
+### Read
+
+```
+get_round()            → (round_id, phase, player_count, opened_at, started_at)
+get_medals(player)     → (silver, gold, diamond)
+is_joined(player)      → bool
+solo_time_remaining()  → uint256  (seconds)
+get_constants()        → (MAX_PLAYERS, SOLO_DIAMOND, SOLO_GOLD, SOLO_TIMEOUT)
+```
+
+---
+
+## Backend API
+
+| Method | Route              | Description                                   |
+| ------ | ------------------ | --------------------------------------------- |
+| GET    | `/api/commitment`  | Generate secret, return commitment for join() |
+| GET    | `/api/round`       | Current round state                           |
+| POST   | `/api/guess`       | Submit a guess (no gas, 5 s cooldown)         |
+| GET    | `/api/history`     | Guess feed (`?since=N`)                       |
+| GET    | `/api/cooldown`    | Remaining cooldown (`?address=0x…`)           |
+| GET    | `/api/leaderboard` | Top 50 by diamond→gold→silver                 |
+| GET    | `/api/medals/0x…`  | Medal counts for one player                   |
+| GET    | `/health`          | Health check                                  |
+| POST   | `/admin/abort`     | Force-abort round (X-Admin-Key header)        |
+| GET    | `/admin/status`    | Internal state dump                           |
+
+---
+
+## Frontend Join Flow
+
+```js
+// 1. Fetch commitment from backend (backend holds the secret)
+const { commitment } = await fetch("/api/commitment").then((r) => r.json());
+
+// 2. Call join() on-chain with MiniPay
+await walletClient.writeContract({
+  address: CONTRACT_ADDRESS,
+  abi: ABI,
+  functionName: "join",
+  args: [commitment],
+});
+```
+
+Subsequent players call `join(commitment)` with any bytes32 — the value is ignored on-chain after the first join.
+
+---
+
+## Commitment Encoding
+
+**Python (backend)**
+
+```python
+from eth_abi import encode
+from eth_utils import keccak
+commitment = keccak(encode(["uint256", "bytes32"], [number_scaled, salt_bytes]))
+```
+
+**JS (viem)**
+
+```js
+import { encodeAbiParameters, keccak256 } from "viem";
+const commitment = keccak256(
+  encodeAbiParameters(
+    [{ type: "uint256" }, { type: "bytes32" }],
+    [numberScaled, salt]
+  )
+);
+```
+
+## Commands
 
 ```bash
-cd backend
-pip install -r requirements.txt
-cp .env.example .env   # fill CONTRACT_ADDRESS + PRIVATE_KEY
+# Deploy local
+mox run script/deploy.py
+
+# Deploy testnet
+mox run script/deploy.py --network alfajores
+
+# Deploy mainnet
+mox run script/deploy.py --network celo
+
+# Test
+mox test
+# or
+pytest tests/ -v
+
+# Backend
+pip install flask flask-cors web3 eth-abi python-dotenv
 python server.py
 ```
 
-### 3. Start Frontend
+---
 
-```bash
-# project root
-cp .env.example .env   # fill VITE_CONTRACT_ADDRESS
-npm install
-npm run dev
+## .env
+
 ```
-
-## MiniPay
-
-- Auto-detects `window.ethereum.isMiniPay` on load → silent connect, no popup
-- `join()` tx has no `feeCurrency` — it's a pure gas tx, no cUSD needed
-- Guesses are free HTTP calls — zero wallet interaction per guess
+PRIVATE_KEY=0x...
+CONTRACT_ADDRESS=0x...
+RPC_URL=https://forno.celo.org
+ADMIN_API_KEY=changeme
+PORT=3001
+```
