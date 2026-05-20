@@ -1,204 +1,141 @@
-import { useEffect, useRef, useCallback } from "react";
-import { decodeEventLog } from "viem";
-import { makePublicClient } from "../lib/viem.js";
-import { CONTRACT_ADDRESS, ABI } from "../lib/contracts.js";
-import { useStore } from "../store/useStore.js";
-import { fetchMedals } from "../lib/api.js";
+// src/hooks/useChainSync.js
+//
 
-const POLL_MS = 3000;
+import { useEffect, useRef } from "react";
+import { useStore, PHASE_DONE, PHASE_SOLO } from "../store/useStore.js";
+import { getRound, getMedals } from "../lib/api.js";
+import { readIsJoined } from "../lib/viem.js";
+
+const POLL_MS      = 4_000;
+const MEDALS_EVERY = 3;
+
+// ── sessionStorage helpers ────────────────────────────────────────────────────
+
+function joinedKey(address, roundId) {
+  return `ng_joined_${address?.toLowerCase()}_${roundId}`;
+}
+
+function loadJoined(address, roundId) {
+  if (!address || !roundId) return false;
+  try { return sessionStorage.getItem(joinedKey(address, roundId)) === "1"; }
+  catch { return false; }
+}
+
+function saveJoined(address, roundId, value) {
+  if (!address || !roundId) return;
+  try {
+    if (value) sessionStorage.setItem(joinedKey(address, roundId), "1");
+    else       sessionStorage.removeItem(joinedKey(address, roundId));
+  } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function useChainSync() {
-  const {
-    account, pubClient, activeTier,
-    updateTier, setHint, revealNumber, resetDisplay,
-    addFeed, clearHistory, setMyMedals,
-  } = useStore();
+  const store = useStore();
 
-  const lastBlockRef = useRef(0n);
-  const timerRef     = useRef(null);
-  // Stable pub client reference — don't recreate on every render
-  const pubRef = useRef(null);
+  const addressRef   = useRef(store.address);
+  const joinedRef    = useRef(false);
+  const prevRoundRef = useRef(-1);   // -1 = not yet seen (distinguishes from roundId=0)
+  const prevPhaseRef = useRef(PHASE_DONE);
+  const pollCountRef = useRef(0);
 
-  function getPub() {
-    if (pubClient) return pubClient;
-    if (!pubRef.current) pubRef.current = makePublicClient();
-    return pubRef.current;
-  }
-
-  const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
-  const sc2s  = (s) => (Number(s) / 100).toFixed(2);
-
-  // ── Read one tier from chain ────────────────────────────────────────────────
-  const refreshTier = useCallback(async (tier) => {
-    const pub = getPub();
-
-    if (CONTRACT_ADDRESS === "0x0000000000000000000000000000000000000000") {
-      updateTier(tier, { phase: 2, playerCount: 0, roundId: 0n });
-      return;
+  // Keep addressRef current; reset joined when wallet changes
+  useEffect(() => {
+    const prev = addressRef.current;
+    addressRef.current = store.address;
+    if (prev !== store.address) {
+      joinedRef.current = false;
     }
+  }, [store.address]);
 
-    try {
-      const info = await pub.readContract({
-        address: CONTRACT_ADDRESS, abi: ABI,
-        functionName: "get_round", args: [tier],
-      });
-      const roundId     = info[0];
-      const rawPhase    = Number(info[1]);
-      const playerCount = Number(info[2]);
-      const startedAt   = info[3];
+  useEffect(() => {
+    let timer;
+    let cancelled = false;
 
-      // round_id==0 && phase==0 → no round ever opened
-      const phase = (roundId === 0n && rawPhase === 0) ? 2 : rawPhase;
+    async function poll() {
+      if (cancelled) return;
 
-      const patch = { roundId, phase, playerCount, startedAt };
+      try {
+        const data = await getRound();
+        if (cancelled) return;
 
-      if (account) {
-        try {
-          patch.joined = await pub.readContract({
-            address: CONTRACT_ADDRESS, abi: ABI,
-            functionName: "is_joined", args: [tier, account],
-          });
-        } catch {
-          patch.joined = false;
+        const {
+          round_id:       roundId,
+          phase,
+          player_count:   playerCount,
+          opened_at:      openedAt,
+          started_at:     startedAt,
+          solo_remaining: soloRemaining,
+        } = data;
+
+        const address = addressRef.current;
+
+        // ── New round detected ───────────────────────────────────────────────
+        const isNewRound = prevRoundRef.current !== -1 &&
+                           roundId !== prevRoundRef.current;
+        if (isNewRound) {
+          joinedRef.current = false;
+          useStore.getState().resetRound();
+          useStore.getState().pushFeed({ type: "round_opened", roundId, ts: Date.now() });
         }
-      }
 
-      updateTier(tier, patch);
-    } catch (e) {
-      console.warn("refreshTier:", e.shortMessage || e.message);
-      // On RPC error fall back to "no round" state to show join button
-      updateTier(tier, { phase: 2, playerCount: 0 });
-    }
-  }, [account, updateTier, pubClient]);
+        // ── First load: restore joined from sessionStorage ───────────────────
+        if (prevRoundRef.current === -1 && roundId > 0 && address) {
+          const restored = loadJoined(address, roundId);
+          if (restored) joinedRef.current = true;
+        }
 
-  // ── Event handler ──────────────────────────────────────────────────────────
-  function handleEvent(name, args) {
-    const { activeTier: at, account: acc } = useStore.getState();
-    const tier = Number(args.tier ?? -1);
-    if (tier < 0 || tier > 2) return;
+        // ── Phase transitions ────────────────────────────────────────────────
+        if (phase === 1 && prevPhaseRef.current === PHASE_SOLO) {
+          useStore.getState().pushFeed({ type: "competitive", playerCount, ts: Date.now() });
+        }
+        if (phase === PHASE_DONE && prevPhaseRef.current !== PHASE_DONE) {
+          useStore.getState().pushFeed({ type: "round_done", roundId, ts: Date.now() });
+        }
 
-    switch (name) {
+        prevRoundRef.current = roundId;
+        prevPhaseRef.current = phase;
 
-      case "RoundOpened":
-        updateTier(tier, {
-          phase: 0,
-          playerCount: 1,
-          roundId: args.round_id,
-          joined: false,
+        // ── Joined check — only when not already confirmed ───────────────────
+        let joined = joinedRef.current;
+        if (address && roundId > 0 && phase !== PHASE_DONE && !joinedRef.current) {
+          try {
+            const onChain = await readIsJoined(address);
+            if (cancelled) return;
+            if (onChain) {
+              joinedRef.current = true;
+              joined = true;
+              saveJoined(address, roundId, true);   // persist for this tab
+            }
+          } catch (_) { /* keep existing */ }
+        }
+
+        // ── Single batched store write ───────────────────────────────────────
+        useStore.getState().setRound({
+          roundId, phase, playerCount,
+          openedAt, startedAt, soloRemaining,
+          joined,
         });
-        if (tier === at) {
-          resetDisplay();
-          clearHistory();
-          addFeed("🎮", "SYSTEM", `${["🥈 Silver","🥇 Gold","💎 Diamond"][tier]} lobby opened!`);
-        }
-        break;
 
-      case "PlayerJoined": {
-        const newCount = Number(args.count);
-        updateTier(tier, { playerCount: newCount });
-        if (tier === at) {
-          addFeed("👤", short(args.player), `joined (${newCount} players)`);
+        // ── Medals (throttled) ───────────────────────────────────────────────
+        pollCountRef.current += 1;
+        if (address && pollCountRef.current % MEDALS_EVERY === 1) {
+          try {
+            const m = await getMedals(address);
+            if (!cancelled) useStore.getState().setMedals(m);
+          } catch (_) {}
         }
-        // Mark as joined if it's our account
-        if (acc && args.player.toLowerCase() === acc.toLowerCase()) {
-          updateTier(tier, { joined: true });
-        }
-        break;
+
+      } catch (err) {
+        console.warn("[useChainSync] poll error:", err.message ?? err);
+        useStore.getState().setServerOnline(false);
+      } finally {
+        if (!cancelled) timer = setTimeout(poll, POLL_MS);
       }
-
-      case "RoundStarted":
-        updateTier(tier, { phase: 1 });
-        if (tier === at) {
-          setHint("", "🎲", "Round started! Submit your first guess.");
-          addFeed("🚀", "SYSTEM", `${["Silver","Gold","Diamond"][tier]} is LIVE!`);
-        }
-        break;
-
-      case "RoundWon": {
-        updateTier(tier, { phase: 2 });
-        if (tier !== at) break;
-        revealNumber(args.number_scaled);
-        addFeed("🏆", short(args.winner), `WON! The number was ${sc2s(args.number_scaled)}`, "win");
-        const isMe = acc && args.winner.toLowerCase() === acc.toLowerCase();
-        if (isMe) {
-          const medal = ["🥈 Silver","🥇 Gold","💎 Diamond"][tier];
-          window.__numduel_won = {
-            number: sc2s(args.number_scaled),
-            medal,
-            tier,
-          };
-          window.dispatchEvent(new CustomEvent("numduel:won"));
-          // Refresh medals after win
-          if (account) fetchMedals(account)
-            .then((m) => setMyMedals({ silver: m.silver||0, gold: m.gold||0, diamond: m.diamond||0 }))
-            .catch(() => {});
-        } else {
-          setHint("solved", "🏆",
-            `${short(args.winner)} won! Number was ${sc2s(args.number_scaled)}`);
-        }
-        break;
-      }
-
-      case "RoundAborted":
-        updateTier(tier, { phase: 2 });
-        if (tier === at) {
-          resetDisplay();
-          addFeed("⚠️", "SYSTEM", `Round aborted.`);
-        }
-        break;
-    }
-  }
-
-  // ── Scan new events ─────────────────────────────────────────────────────────
-  const scanEvents = useCallback(async () => {
-    if (CONTRACT_ADDRESS === "0x0000000000000000000000000000000000000000") return;
-    const pub = getPub();
-    try {
-      const latest = await pub.getBlockNumber();
-      if (lastBlockRef.current === 0n) {
-        // On first run, look back 200 blocks to catch recent activity
-        lastBlockRef.current = latest > 200n ? latest - 200n : 0n;
-      }
-      if (latest <= lastBlockRef.current) return;
-
-      const logs = await pub.getLogs({
-        address:   CONTRACT_ADDRESS,
-        fromBlock: lastBlockRef.current + 1n,
-        toBlock:   latest,
-      });
-      lastBlockRef.current = latest;
-
-      for (const log of logs) {
-        try {
-          const { eventName, args } = decodeEventLog({
-            abi: ABI, data: log.data, topics: log.topics,
-          });
-          handleEvent(eventName, args);
-        } catch {}
-      }
-    } catch (e) {
-      console.warn("scanEvents:", e.shortMessage || e.message);
-    }
-  }, [pubClient]);
-
-  // ── Poll loop — starts immediately, no wallet required ────────────────────
-  useEffect(() => {
-    async function tick() {
-      await refreshTier(activeTier);
-      await scanEvents();
     }
 
-    tick(); // immediate
-    clearInterval(timerRef.current);
-    timerRef.current = setInterval(tick, POLL_MS);
-    return () => clearInterval(timerRef.current);
-  }, [activeTier, account]); // restart when tier or wallet changes
-
-  // ── Load medals when wallet connects ──────────────────────────────────────
-  useEffect(() => {
-    if (!account) return;
-    fetchMedals(account)
-      .then((m) => setMyMedals({ silver: m.silver||0, gold: m.gold||0, diamond: m.diamond||0 }))
-      .catch(() => {});
-  }, [account]);
+    poll();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
 }

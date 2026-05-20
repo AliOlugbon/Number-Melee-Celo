@@ -1,49 +1,70 @@
+// src/components/ParticleCanvas.jsx
+// Decorative animated particle background. Self-contained — no store deps.
+
 import { useEffect, useRef } from "react";
 
-let particles = [];
+const PARTICLE_COUNT = 40;
+const SPEED          = 0.25;
 
-export function burst(n = 80, color = "#00ef82") {
-  for (let i = 0; i < n; i++)
-    particles.push({
-      x: Math.random() * window.innerWidth,
-      y: Math.random() * window.innerHeight * 0.5,
-      vx: (Math.random() - 0.5) * 3,
-      vy: (Math.random() - 1.4) * 4,
-      r:  2 + Math.random() * 3,
-      life: 1,
-      dec:  0.007 + Math.random() * 0.01,
-      color,
-    });
+function randomParticle(w, h) {
+  return {
+    x:  Math.random() * w,
+    y:  Math.random() * h,
+    r:  Math.random() * 2 + 1,
+    vx: (Math.random() - 0.5) * SPEED,
+    vy: (Math.random() - 0.5) * SPEED,
+    a:  Math.random() * 0.4 + 0.1,
+  };
 }
 
 export default function ParticleCanvas() {
-  const ref = useRef(null);
+  const canvasRef = useRef(null);
 
   useEffect(() => {
-    const cvs = ref.current;
-    const ctx = cvs.getContext("2d");
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
 
-    const resize = () => { cvs.width = innerWidth; cvs.height = innerHeight; };
-    resize();
-    window.addEventListener("resize", resize);
+    let w = window.innerWidth;
+    let h = window.innerHeight;
+    canvas.width  = w;
+    canvas.height = h;
 
-    let raf;
-    const draw = () => {
-      ctx.clearRect(0, 0, cvs.width, cvs.height);
-      particles = particles.filter((p) => p.life > 0);
+    let particles = Array.from({ length: PARTICLE_COUNT }, () => randomParticle(w, h));
+    let rafId;
+
+    function draw() {
+      ctx.clearRect(0, 0, w, h);
       for (const p of particles) {
-        ctx.globalAlpha = p.life;
-        ctx.fillStyle   = p.color;
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
-        p.x += p.vx; p.y += p.vy; p.life -= p.dec;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(120, 200, 255, ${p.a})`;
+        ctx.fill();
+
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 0 || p.x > w) p.vx *= -1;
+        if (p.y < 0 || p.y > h) p.vy *= -1;
       }
-      ctx.globalAlpha = 1;
-      raf = requestAnimationFrame(draw);
-    };
+      rafId = requestAnimationFrame(draw);
+    }
+
     draw();
 
-    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
+    function onResize() {
+      w = window.innerWidth;
+      h = window.innerHeight;
+      canvas.width  = w;
+      canvas.height = h;
+      particles = Array.from({ length: PARTICLE_COUNT }, () => randomParticle(w, h));
+    }
+
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", onResize);
+    };
   }, []);
 
-  return <canvas ref={ref} style={{ position:"fixed",inset:0,zIndex:0,pointerEvents:"none" }} />;
+  return <canvas ref={canvasRef} className="particle-canvas" aria-hidden />;
 }

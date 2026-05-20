@@ -3,22 +3,6 @@ NumMelee Backend — server.py
 
 Three medals awarded per round.
 
-Responsibilities
-────────────────
-- Serve GET /api/commitment → generate secret, return commitment bytes32 for
-  the frontend to pass into join() on-chain (first joiner only).
-- Watch RoundOpened events → confirm commitment is tracked correctly.
-- Watch PlayerJoined / CompetitiveModeActivated events → cancel solo timer
-  when 2nd player joins.
-- Serve POST /api/guess → instant hint oracle (no gas, 5 s cooldown).
-  Tracks all guesses in-memory for proximity scoring.
-- Solo timer: abort after 5 min if still solo.
-- Solo win: call reveal_win(winner, number_scaled, salt) → medal from time.
-- Competitive win: score all guesses by proximity, call
-  reveal_win_competitive(winner, medal, number_scaled, salt).
-- Serve GET /api/history, GET /api/round, GET /api/leaderboard.
-- Admin: POST /admin/abort, GET /admin/status.
-
 Install
 ───────
   pip install flask flask-cors web3 eth-abi python-dotenv
@@ -92,29 +76,35 @@ ABI = [
     {
         "name": "get_round", "type": "function", "inputs": [],
         "outputs": [
-            {"type": "uint256"},  # round_id
-            {"type": "uint8"},    # phase
-            {"type": "uint256"},  # player_count
-            {"type": "uint256"},  # opened_at
-            {"type": "uint256"},  # started_at
+            {"name": "round_id",     "type": "uint256"},
+            {"name": "phase",        "type": "uint8"},
+            {"name": "player_count", "type": "uint256"},
+            {"name": "opened_at",    "type": "uint256"},
+            {"name": "started_at",   "type": "uint256"},
         ],
         "stateMutability": "view",
     },
     {
         "name": "get_medals", "type": "function",
         "inputs": [{"name": "player", "type": "address"}],
-        "outputs": [{"type": "uint256"}, {"type": "uint256"}, {"type": "uint256"}],
+        "outputs": [
+            {"name": "silver",  "type": "uint256"},
+            {"name": "gold",    "type": "uint256"},
+            {"name": "diamond", "type": "uint256"},
+        ],
         "stateMutability": "view",
     },
     {
         "name": "is_joined", "type": "function",
         "inputs": [{"name": "player", "type": "address"}],
-        "outputs": [{"type": "bool"}], "stateMutability": "view",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
     },
     {
         "name": "solo_time_remaining", "type": "function",
         "inputs": [],
-        "outputs": [{"type": "uint256"}], "stateMutability": "view",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
     },
     # Events
     {
@@ -176,35 +166,30 @@ contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=ABI)
 NUM_MIN      = 1000    # 10.00 scaled ×100
 NUM_MAX      = 9999    # 99.99 scaled ×100
 COOLDOWN     = 5       # seconds between guesses per player
-SOLO_TIMEOUT = 300     # 5 minutes
-SOLO_DIAMOND = 60      # ≤ 1 min → Diamond
-SOLO_GOLD    = 180     # ≤ 3 min → Gold
+SOLO_TIMEOUT = 300     # 5 minutes in seconds
+SOLO_DIAMOND = 60      # ≤ 60 s → Diamond
+SOLO_GOLD    = 180     # ≤ 180 s → Gold
 
 MEDAL_SILVER  = 0
 MEDAL_GOLD    = 1
 MEDAL_DIAMOND = 2
-
-MEDAL_NAMES = {0: "Silver", 1: "Gold", 2: "Diamond"}
+MEDAL_NAMES   = {0: "Silver", 1: "Gold", 2: "Diamond"}
 
 # ─── In-memory game state ─────────────────────────────────────────────────────
 
-# All fields reset when a new round opens.
 game_state = {
-    "number_scaled":  None,    # int | None — None until commitment generated
-    "salt":           None,    # hex str | None
-    "commitment":     None,    # hex str | None
+    "number_scaled":  None,
+    "salt":           None,
+    "commitment":     None,
     "round_id":       0,
-    "opened_at":      None,    # float (time.time()) when round opened
+    "opened_at":      None,   # time.time() when event poller sees RoundOpened
     "is_competitive": False,
-    "history":        [],      # list of guess records (all players)
-    # { player_lower → [guess_scaled, ...] } for proximity scoring
+    "history":        [],
     "player_guesses": {},
 }
 
-# (player_lower) → last_guess_timestamp
 cooldowns: dict = {}
 lock = threading.Lock()
-_solo_timer_thread = None   # reference to cancel solo timer
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -213,7 +198,7 @@ def gen_commitment(number_scaled: int, salt_hex: str) -> bytes:
     encoded    = abi_encode(["uint256", "bytes32"], [number_scaled, salt_bytes])
     return w3.keccak(encoded)
 
-def gen_secret() -> tuple[int, str, bytes]:
+def gen_secret():
     number_scaled = secrets.randbelow(NUM_MAX - NUM_MIN + 1) + NUM_MIN
     salt_hex      = secrets.token_hex(32)
     commitment    = gen_commitment(number_scaled, salt_hex)
@@ -248,63 +233,66 @@ def reset_state(round_id: int = 0):
 
 # ─── Solo timeout logic ───────────────────────────────────────────────────────
 
-def _solo_timer(round_id: int, opened_at: float):
-    """Sleep 5 min, then abort if the round is still solo and open."""
-    time.sleep(SOLO_TIMEOUT + 2)   # +2 s buffer for block finality
+def _solo_timer(round_id: int, chain_opened_at: int):
+    """
+    Sleep until 5 min past the on-chain opened_at, then abort if still solo.
+    Uses chain time (block.timestamp) as the source of truth — same as the
+    contract — so the timeout is accurate regardless of server clock skew.
+    """
+    now_unix   = time.time()
+    # chain_opened_at is a block.timestamp (unix seconds)
+    deadline   = chain_opened_at + SOLO_TIMEOUT
+    sleep_secs = max(0, deadline - now_unix) + 3   # +3 s finality buffer
+
+    time.sleep(sleep_secs)
+
     with lock:
-        st = game_state
-        if st["round_id"] != round_id or st["is_competitive"]:
-            return   # round already over or went competitive
-        if st["number_scaled"] is None:
-            return   # no secret — nothing to do
+        if game_state["round_id"] != round_id or game_state["is_competitive"]:
+            return
+        if game_state["number_scaled"] is None:
+            return
     try:
-        info = contract.functions.get_round().call()
+        info  = contract.functions.get_round().call()
         phase = info[1]
         if phase < 2:
             receipt = send_tx(contract.functions.abort_round())
-            print(f"[solo-timer] Round #{round_id} timed out. abort_round tx: "
-                  f"{receipt['transactionHash'].hex()[:16]}…")
+            print(f"[solo-timer] Round #{round_id} timed out → abort_round "
+                  f"tx: {receipt['transactionHash'].hex()[:16]}…")
             with lock:
                 reset_state(round_id)
     except Exception as e:
         print(f"[solo-timer] abort failed: {e}")
 
-def start_solo_timer(round_id: int, opened_at: float):
-    global _solo_timer_thread
-    t = threading.Thread(target=_solo_timer, args=[round_id, opened_at], daemon=True)
-    _solo_timer_thread = t
+def start_solo_timer(round_id: int, chain_opened_at: int):
+    t = threading.Thread(
+        target=_solo_timer, args=[round_id, chain_opened_at], daemon=True
+    )
     t.start()
 
 # ─── Win logic ────────────────────────────────────────────────────────────────
 
 def do_reveal_win_solo(winner_addr: str):
-    """Solo mode: contract computes medal from elapsed time."""
     with lock:
-        st = game_state
-        if not st["number_scaled"]:
+        if not game_state["number_scaled"]:
             return
-        number_scaled = st["number_scaled"]
-        salt          = st["salt"]
-
+        number_scaled = game_state["number_scaled"]
+        salt          = game_state["salt"]
     try:
         receipt = send_tx(contract.functions.reveal_win(
             Web3.to_checksum_address(winner_addr),
             number_scaled,
             bytes.fromhex(salt),
         ))
-        print(f"[solo] reveal_win tx: {receipt['transactionHash'].hex()[:16]}…")
+        print(f"[solo] reveal_win → {receipt['transactionHash'].hex()[:16]}…")
     except Exception as e:
         print(f"[solo] reveal_win FAILED: {e}")
 
 def do_reveal_win_competitive(winner_addr: str, medal: int):
-    """Competitive mode: backend passes explicit medal."""
     with lock:
-        st = game_state
-        if not st["number_scaled"]:
+        if not game_state["number_scaled"]:
             return
-        number_scaled = st["number_scaled"]
-        salt          = st["salt"]
-
+        number_scaled = game_state["number_scaled"]
+        salt          = game_state["salt"]
     try:
         receipt = send_tx(contract.functions.reveal_win_competitive(
             Web3.to_checksum_address(winner_addr),
@@ -313,15 +301,11 @@ def do_reveal_win_competitive(winner_addr: str, medal: int):
             bytes.fromhex(salt),
         ))
         print(f"[competitive] reveal_win_competitive medal={MEDAL_NAMES[medal]} "
-              f"tx: {receipt['transactionHash'].hex()[:16]}…")
+              f"→ {receipt['transactionHash'].hex()[:16]}…")
     except Exception as e:
         print(f"[competitive] reveal_win_competitive FAILED: {e}")
 
-def score_proximity(secret: int, player_guesses: dict) -> list[tuple[str, int]]:
-    """
-    Return list of (player_lower, best_distance) sorted ascending.
-    Best distance = min |guess - secret| across all guesses by that player.
-    """
+def score_proximity(secret: int, player_guesses: dict):
     results = []
     for player, guesses in player_guesses.items():
         if not guesses:
@@ -331,19 +315,15 @@ def score_proximity(secret: int, player_guesses: dict) -> list[tuple[str, int]]:
     return sorted(results, key=lambda x: x[1])
 
 def handle_correct_guess(player_lower: str):
-    """Called from /api/guess when a correct guess is submitted."""
-    st = game_state
-    if st["is_competitive"]:
-        # Competitive: Diamond for exact, Gold for closest, Silver for 2nd closest
-        ranking = score_proximity(st["number_scaled"], st["player_guesses"])
-        # The correct guesser always gets Diamond
+    with lock:
+        is_competitive = game_state["is_competitive"]
+    if is_competitive:
         threading.Thread(
             target=do_reveal_win_competitive,
             args=[player_lower, MEDAL_DIAMOND],
             daemon=True,
         ).start()
     else:
-        # Solo: medal derived from elapsed time in the contract
         threading.Thread(
             target=do_reveal_win_solo,
             args=[player_lower],
@@ -361,7 +341,6 @@ def poll_events():
             latest = w3.eth.block_number
             if _last_block == 0:
                 _last_block = max(0, latest - 300)
-
             if latest > _last_block:
                 _handle_round_opened(_last_block + 1, latest)
                 _handle_player_joined(_last_block + 1, latest)
@@ -377,23 +356,28 @@ def _handle_round_opened(from_block, to_block):
         logs = contract.events.RoundOpened().get_logs(
             from_block=from_block, to_block=to_block)
         for log in logs:
-            rid        = log["args"]["round_id"]
-            opener     = log["args"]["opener"]
-            commitment = log["args"]["commitment"].hex()
+            rid            = log["args"]["round_id"]
+            opener         = log["args"]["opener"]
+            commitment_hex = log["args"]["commitment"].hex()
+
+            # Get chain opened_at from the block timestamp for timer accuracy
+            block_info     = w3.eth.get_block(log["blockNumber"])
+            chain_opened   = block_info["timestamp"]
+
             with lock:
-                # Verify we generated this commitment (sanity check)
-                if game_state["commitment"] and game_state["commitment"] == commitment:
+                if game_state["commitment"] and game_state["commitment"] == commitment_hex:
                     game_state["round_id"]  = rid
                     game_state["opened_at"] = time.time()
                     print(f"[event] Round #{rid} opened by {opener[:10]}…  "
                           f"commitment confirmed ✓")
-                    start_solo_timer(rid, game_state["opened_at"])
                 else:
-                    # Opened by someone else or stale state — reset and track
                     reset_state(rid)
                     game_state["opened_at"] = time.time()
                     print(f"[event] Round #{rid} opened by {opener[:10]}… "
-                          f"(commitment not from us — tracking only)")
+                          f"(external — tracking only)")
+
+            # Start solo timer using chain opened_at — authoritative
+            start_solo_timer(rid, chain_opened)
     except Exception as e:
         print(f"[handle_round_opened] {e}")
 
@@ -419,8 +403,7 @@ def _handle_competitive_activated(from_block, to_block):
             with lock:
                 if game_state["round_id"] == rid:
                     game_state["is_competitive"] = True
-            print(f"[event] CompetitiveModeActivated round #{rid}  players={count}  "
-                  f"solo timer cancelled ✓")
+            print(f"[event] CompetitiveModeActivated round #{rid}  players={count} ✓")
     except Exception as e:
         print(f"[handle_competitive_activated] {e}")
 
@@ -447,63 +430,65 @@ def _handle_round_won(from_block, to_block):
 def api_commitment():
     """
     GET /api/commitment
-
-    Called by the frontend BEFORE the first join() tx.
-    Generates a new secret + commitment for the round.
-    The commitment bytes32 is passed into join() on-chain by the first player.
-
-    Returns: { commitment: "0x…", expires_in: 120 }
-
-    The secret is held in memory. If no join() fires within 2 min, the secret
-    is discarded on next request. This prevents stale commitments accumulating.
+    Frontend calls this BEFORE the first join() tx to get the commitment bytes32.
     """
     with lock:
-        # If a round is already live, don't regenerate
-        info = contract.functions.get_round().call()
+        info  = contract.functions.get_round().call()
         phase = info[1]
-        if phase == 0 or phase == 1:
-            # Round already open — return existing commitment if we have it
-            if game_state["commitment"]:
-                return jsonify({
-                    "commitment": "0x" + game_state["commitment"],
-                    "already_open": True,
-                    "phase": phase,
-                })
+        if phase in (0, 1) and game_state["commitment"]:
+            return jsonify({
+                "commitment":  "0x" + game_state["commitment"],
+                "already_open": True,
+                "phase":        phase,
+            })
 
         number_scaled, salt_hex, commitment_bytes = gen_secret()
         commitment_hex = commitment_bytes.hex()
-
-        # Store tentatively (overwrite any stale pre-round secret)
         game_state.update({
             "number_scaled": number_scaled,
             "salt":          salt_hex,
             "commitment":    commitment_hex,
         })
 
-    print(f"[commitment] Generated secret={sc2f(number_scaled)}  "
+    print(f"[commitment] secret={sc2f(number_scaled)}  "
           f"commitment=0x{commitment_hex[:16]}…")
     return jsonify({
-        "commitment":  "0x" + commitment_hex,
+        "commitment":   "0x" + commitment_hex,
         "already_open": False,
     })
 
 @app.route("/api/round", methods=["GET"])
 def api_round():
-    """GET /api/round — current round state from chain."""
+    """
+    GET /api/round — current round state.
+
+    
+    """
     info = contract.functions.get_round().call()
-    # (round_id, phase, player_count, opened_at, started_at)
+    # info: (round_id, phase, player_count, opened_at, started_at)
+    round_id, phase, player_count, chain_opened_at, started_at = info
+
+    solo_remaining = 0
+    if phase == 0 and chain_opened_at > 0:
+        # Use the current block timestamp as "now" — stays in chain-time space.
+        # w3.eth.get_block("latest")["timestamp"] is accurate but adds ~200 ms.
+        # Using time.time() is a reasonable approximation; any small drift is
+        # corrected every 4 s when the frontend re-polls.
+        elapsed        = int(time.time()) - chain_opened_at
+        solo_remaining = max(0, SOLO_TIMEOUT - elapsed)
+
     with lock:
-        solo_remaining = max(0, SOLO_TIMEOUT - (time.time() - game_state["opened_at"])) \
-            if game_state["opened_at"] and info[1] == 0 else 0
+        is_competitive = game_state["is_competitive"]
+
     return jsonify({
-        "round_id":       info[0],
-        "phase":          info[1],
-        "player_count":   info[2],
-        "opened_at":      info[3],
-        "started_at":     info[4],
-        "max_players":    100,
-        "solo_remaining": int(solo_remaining),
-        "is_competitive": info[1] == 1,
+        "round_id":       round_id,
+        "phase":          phase,
+        "player_count":   player_count,
+        "opened_at":      chain_opened_at,
+        "started_at":     started_at,
+        "max_players":    25,
+        "solo_remaining": solo_remaining,
+        "is_competitive": is_competitive,
     })
 
 @app.route("/api/guess", methods=["POST"])
@@ -512,7 +497,6 @@ def api_guess():
     POST /api/guess
     Body: { address: "0x…", guess: "42.75" }
     Returns: { hint: "higher"|"lower"|"correct", idx: N }
-    No gas. 5-second cooldown per player.
     """
     data      = request.json or {}
     player    = (data.get("address") or "").lower()
@@ -523,30 +507,26 @@ def api_guess():
     except Exception:
         return jsonify({"error": "invalid address"}), 400
 
-    # Must have joined on-chain
     if not contract.functions.is_joined(player_addr).call():
         return jsonify({"error": "join the round on-chain first"}), 403
 
-    # Round must be open (phase 0 solo or phase 1 competitive)
     info = contract.functions.get_round().call()
     phase = info[1]
     if phase not in (0, 1):
         return jsonify({"error": "round not active"}), 400
 
-    # Solo timeout guard
-    if phase == 0 and game_state["opened_at"]:
-        elapsed = time.time() - game_state["opened_at"]
+    # Solo timeout guard using chain opened_at
+    if phase == 0 and info[3] > 0:
+        elapsed = int(time.time()) - info[3]
         if elapsed >= SOLO_TIMEOUT:
             return jsonify({"error": "solo window expired"}), 400
 
-    # Cooldown
     now     = time.time()
     last_ts = cooldowns.get(player, 0)
     wait    = COOLDOWN - (now - last_ts)
     if wait > 0:
         return jsonify({"error": "cooldown", "wait_seconds": round(wait, 1)}), 429
 
-    # Parse guess
     try:
         guess_float  = float(guess_str)
         guess_scaled = round(guess_float * 100)
@@ -554,31 +534,31 @@ def api_guess():
         return jsonify({"error": "invalid guess format"}), 400
 
     if guess_scaled < NUM_MIN or guess_scaled > NUM_MAX:
-        return jsonify({"error": f"guess out of range ({sc2f(NUM_MIN)}–{sc2f(NUM_MAX)})"}), 400
+        return jsonify({
+            "error": f"guess out of range ({sc2f(NUM_MIN)}–{sc2f(NUM_MAX)})"
+        }), 400
 
     with lock:
-        st = game_state
-        if st["number_scaled"] is None:
-            return jsonify({"error": "game not started yet — please wait"}), 400
+        if game_state["number_scaled"] is None:
+            return jsonify({"error": "game not ready — please wait"}), 400
 
         cooldowns[player] = now
-        secret = st["number_scaled"]
-        hint   = ("correct" if guess_scaled == secret
-                  else ("higher" if guess_scaled < secret else "lower"))
+        secret  = game_state["number_scaled"]
+        hint    = ("correct" if guess_scaled == secret
+                   else ("higher" if guess_scaled < secret else "lower"))
 
         record = {
-            "idx":          len(st["history"]),
+            "idx":          len(game_state["history"]),
             "player":       player,
             "guess_scaled": guess_scaled,
             "hint":         hint,
             "timestamp":    now,
         }
-        st["history"].append(record)
+        game_state["history"].append(record)
 
-        # Track per-player guesses for proximity scoring
-        if player not in st["player_guesses"]:
-            st["player_guesses"][player] = []
-        st["player_guesses"][player].append(guess_scaled)
+        if player not in game_state["player_guesses"]:
+            game_state["player_guesses"][player] = []
+        game_state["player_guesses"][player].append(guess_scaled)
 
         is_correct = hint == "correct"
 
@@ -593,24 +573,18 @@ def api_guess():
 
 @app.route("/api/history")
 def api_history():
-    """GET /api/history?since=N — guess feed since record index N."""
-    since   = int(request.args.get("since", 0))
-    history = game_state["history"]
-    return jsonify({"total": len(history), "items": history[since:]})
+    since = int(request.args.get("since", 0))
+    h     = game_state["history"]
+    return jsonify({"total": len(h), "items": h[since:]})
 
 @app.route("/api/cooldown")
 def api_cooldown():
-    """GET /api/cooldown?address=0x… — seconds remaining on cooldown."""
-    player = (request.args.get("address") or "").lower()
-    last   = cooldowns.get(player, 0)
+    player  = (request.args.get("address") or "").lower()
+    last    = cooldowns.get(player, 0)
     return jsonify({"remaining": round(max(0, COOLDOWN - (time.time() - last)), 2)})
 
 @app.route("/api/leaderboard")
 def api_leaderboard():
-    """
-    GET /api/leaderboard — top 50 by diamond→gold→silver.
-    Reads MedalAwarded events (cumulative totals) from last 50k blocks.
-    """
     try:
         from_block = max(0, w3.eth.block_number - 50_000)
         logs = contract.events.MedalAwarded().get_logs(
@@ -618,9 +592,7 @@ def api_leaderboard():
 
         player_medals: dict = {}
         for log in logs:
-            addr  = log["args"]["player"].lower()
-            medal = log["args"]["medal"]
-            # Each MedalAwarded carries cumulative totals — just keep the latest
+            addr = log["args"]["player"].lower()
             player_medals[addr] = {
                 "address": log["args"]["player"],
                 "silver":  log["args"]["silver"],
@@ -643,7 +615,6 @@ def api_leaderboard():
 
 @app.route("/api/medals/<address>")
 def api_medals(address):
-    """GET /api/medals/0x… — medal counts for a single player."""
     try:
         addr   = Web3.to_checksum_address(address)
         result = contract.functions.get_medals(addr).call()
@@ -688,21 +659,20 @@ def admin_status():
         return err
     info = contract.functions.get_round().call()
     with lock:
-        st = game_state
         return jsonify({
             "round_id":       info[0],
             "phase":          info[1],
             "player_count":   info[2],
-            "is_competitive": st["is_competitive"],
-            "has_secret":     st["number_scaled"] is not None,
-            "history_len":    len(st["history"]),
+            "is_competitive": game_state["is_competitive"],
+            "has_secret":     game_state["number_scaled"] is not None,
+            "history_len":    len(game_state["history"]),
             "solo_remaining": contract.functions.solo_time_remaining().call(),
         })
 
 # ─── Startup ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print(f"NumberGuess backend")
+    print(f"NumMelee backend")
     print(f"Operator : {op.address}")
     print(f"Contract : {CONTRACT_ADDRESS}")
     print(f"Network  : {RPC_URL}")

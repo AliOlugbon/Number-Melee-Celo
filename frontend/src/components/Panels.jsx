@@ -1,81 +1,86 @@
-import { motion, AnimatePresence } from "motion/react";
-import { useStore } from "../store/useStore.js";
+// src/components/Panels.jsx
 
-const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
-const sc2s  = (s) => (Number(s) / 100).toFixed(2);
+import { useStore, MEDAL_EMOJI } from "../store/useStore.js";
 
-// ─── HistoryPanel ─────────────────────────────────────────────────────────────
+// ── HistoryPanel ──────────────────────────────────────────────────────────────
+// Shows guess history for this round (from /api/history poll).
+
 export function HistoryPanel() {
-  const { history } = useStore();
+  const { history, joined } = useStore();
 
-  const badgeLabel = (hint) =>
-    hint === "higher"  ? "⬆ HIGHER"
-    : hint === "lower" ? "⬇ LOWER"
-    : hint === "correct" ? "✓ WIN"
-    : "…";
+  if (!joined) return null;
+
+  const recent = [...history].reverse().slice(0, 50);
 
   return (
-    <div className="side-card">
-      <div className="sc-head">
-        <span className="sc-title">GUESS HISTORY</span>
-        <span className="sc-meta">{history.length} guesses</span>
-      </div>
-      <div className="hist-scroll">
-        {history.length === 0 && (
-          <div className="hist-empty">No guesses yet this round</div>
-        )}
-        <AnimatePresence initial={false}>
-          {history.map((item) => {
-            const cls = item.hint === "correct" ? "correct" : (item.hint || "pending");
-            return (
-              <motion.div
-                key={`${item.idx}-${item.player}`}
-                className={`hist-item ${cls}`}
-                initial={{ opacity: 0, x: 12 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.2 }}
-              >
-                <div className="hi-num">{sc2s(item.guess_scaled)}</div>
-                <div className="hi-who">{short(item.player)}</div>
-                <div className={`hi-badge ${cls}`}>{badgeLabel(item.hint)}</div>
-              </motion.div>
-            );
-          })}
-        </AnimatePresence>
-      </div>
-    </div>
+    <section className="panel history-panel">
+      <h3 className="panel-title">Guesses</h3>
+      {recent.length === 0 ? (
+        <p className="panel-empty">No guesses yet.</p>
+      ) : (
+        <ul className="history-list">
+          {recent.map((r) => (
+            <li key={r.idx} className={`history-item hint-${r.hint}`}>
+              <span className="h-player">
+                {r.player.slice(0, 6)}…{r.player.slice(-3)}
+              </span>
+              <span className="h-guess">{(r.guess_scaled / 100).toFixed(2)}</span>
+              <span className="h-hint">
+                {r.hint === "higher"  && "↑"}
+                {r.hint === "lower"   && "↓"}
+                {r.hint === "correct" && "✓"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
-// ─── FeedPanel ────────────────────────────────────────────────────────────────
+// ── FeedPanel ─────────────────────────────────────────────────────────────────
+// Shows live round events: joins, mode changes, wins, aborts.
+
+const FEED_ICONS = {
+  round_opened:  "🆕",
+  competitive:   "⚔️",
+  join:          "👤",
+  round_done:    "🏁",
+};
+
+function feedLabel(entry) {
+  switch (entry.type) {
+    case "round_opened":
+      return `Round #${entry.roundId} opened`;
+    case "competitive":
+      return `Competitive! ${entry.playerCount} players`;
+    case "join":
+      return `${entry.player?.slice(0, 6) ?? ""}… joined`;
+    case "round_done":
+      return `Round #${entry.roundId} ended`;
+    default:
+      return entry.type;
+  }
+}
+
 export function FeedPanel() {
   const { feed } = useStore();
+
   return (
-    <div className="side-card">
-      <div className="sc-head">
-        <span className="sc-title">LIVE FEED</span>
-        <span className="live-pip" />
-      </div>
-      <ul className="feed-list">
-        <AnimatePresence initial={false}>
-          {feed.map((item) => (
-            <motion.li
-              key={item.id}
-              className="feed-li"
-              initial={{ opacity: 0, y: -6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.18 }}
-            >
-              <span className="fl-ico">{item.icon}</span>
-              <div>
-                <div className="fl-who">{item.who}</div>
-                <div className={`fl-msg${item.cls ? ` ${item.cls}` : ""}`}>{item.msg}</div>
-              </div>
-            </motion.li>
+    <section className="panel feed-panel">
+      <h3 className="panel-title">Feed</h3>
+      {feed.length === 0 ? (
+        <p className="panel-empty">Nothing yet.</p>
+      ) : (
+        <ul className="feed-list">
+          {feed.map((entry, i) => (
+            <li key={i} className="feed-item">
+              <span className="feed-icon">{FEED_ICONS[entry.type] ?? "•"}</span>
+              <span className="feed-label">{feedLabel(entry)}</span>
+            </li>
           ))}
-        </AnimatePresence>
-      </ul>
-    </div>
+        </ul>
+      )}
+    </section>
   );
 }

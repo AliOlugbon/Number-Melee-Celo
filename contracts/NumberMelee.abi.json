@@ -3,11 +3,6 @@
     "name": "RoundOpened",
     "inputs": [
       {
-        "name": "tier",
-        "type": "uint8",
-        "indexed": true
-      },
-      {
         "name": "round_id",
         "type": "uint256",
         "indexed": true
@@ -15,6 +10,11 @@
       {
         "name": "opener",
         "type": "address",
+        "indexed": false
+      },
+      {
+        "name": "commitment",
+        "type": "bytes32",
         "indexed": false
       }
     ],
@@ -24,11 +24,6 @@
   {
     "name": "PlayerJoined",
     "inputs": [
-      {
-        "name": "tier",
-        "type": "uint8",
-        "indexed": true
-      },
       {
         "name": "round_id",
         "type": "uint256",
@@ -49,21 +44,16 @@
     "type": "event"
   },
   {
-    "name": "RoundStarted",
+    "name": "CompetitiveModeActivated",
     "inputs": [
-      {
-        "name": "tier",
-        "type": "uint8",
-        "indexed": true
-      },
       {
         "name": "round_id",
         "type": "uint256",
         "indexed": true
       },
       {
-        "name": "commitment",
-        "type": "bytes32",
+        "name": "count",
+        "type": "uint256",
         "indexed": false
       }
     ],
@@ -74,11 +64,6 @@
     "name": "RoundWon",
     "inputs": [
       {
-        "name": "tier",
-        "type": "uint8",
-        "indexed": true
-      },
-      {
         "name": "round_id",
         "type": "uint256",
         "indexed": true
@@ -87,6 +72,11 @@
         "name": "winner",
         "type": "address",
         "indexed": true
+      },
+      {
+        "name": "medal",
+        "type": "uint8",
+        "indexed": false
       },
       {
         "name": "number_scaled",
@@ -116,7 +106,7 @@
         "indexed": true
       },
       {
-        "name": "tier",
+        "name": "medal",
         "type": "uint8",
         "indexed": true
       },
@@ -143,11 +133,6 @@
     "name": "RoundAborted",
     "inputs": [
       {
-        "name": "tier",
-        "type": "uint8",
-        "indexed": true
-      },
-      {
         "name": "round_id",
         "type": "uint256",
         "indexed": true
@@ -162,22 +147,6 @@
     "name": "join",
     "inputs": [
       {
-        "name": "tier",
-        "type": "uint8"
-      }
-    ],
-    "outputs": []
-  },
-  {
-    "stateMutability": "nonpayable",
-    "type": "function",
-    "name": "start_round",
-    "inputs": [
-      {
-        "name": "tier",
-        "type": "uint8"
-      },
-      {
         "name": "commitment",
         "type": "bytes32"
       }
@@ -189,10 +158,6 @@
     "type": "function",
     "name": "reveal_win",
     "inputs": [
-      {
-        "name": "tier",
-        "type": "uint8"
-      },
       {
         "name": "winner",
         "type": "address"
@@ -211,13 +176,32 @@
   {
     "stateMutability": "nonpayable",
     "type": "function",
-    "name": "abort_round",
+    "name": "reveal_win_competitive",
     "inputs": [
       {
-        "name": "tier",
+        "name": "winner",
+        "type": "address"
+      },
+      {
+        "name": "medal",
         "type": "uint8"
+      },
+      {
+        "name": "number_scaled",
+        "type": "uint256"
+      },
+      {
+        "name": "salt",
+        "type": "bytes32"
       }
     ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "abort_round",
+    "inputs": [],
     "outputs": []
   },
   {
@@ -236,12 +220,7 @@
     "stateMutability": "view",
     "type": "function",
     "name": "get_round",
-    "inputs": [
-      {
-        "name": "tier",
-        "type": "uint8"
-      }
-    ],
+    "inputs": [],
     "outputs": [
       {
         "name": "",
@@ -250,6 +229,10 @@
       {
         "name": "",
         "type": "uint8"
+      },
+      {
+        "name": "",
+        "type": "uint256"
       },
       {
         "name": "",
@@ -292,10 +275,6 @@
     "name": "is_joined",
     "inputs": [
       {
-        "name": "tier",
-        "type": "uint8"
-      },
-      {
         "name": "player",
         "type": "address"
       }
@@ -310,14 +289,33 @@
   {
     "stateMutability": "view",
     "type": "function",
-    "name": "max_players",
-    "inputs": [
-      {
-        "name": "tier",
-        "type": "uint8"
-      }
-    ],
+    "name": "solo_time_remaining",
+    "inputs": [],
     "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "get_constants",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint256"
+      },
       {
         "name": "",
         "type": "uint256"
@@ -339,13 +337,8 @@
   {
     "stateMutability": "view",
     "type": "function",
-    "name": "rounds",
-    "inputs": [
-      {
-        "name": "arg0",
-        "type": "uint8"
-      }
-    ],
+    "name": "round",
+    "inputs": [],
     "outputs": [
       {
         "name": "",
@@ -366,6 +359,10 @@
           {
             "name": "winner",
             "type": "address"
+          },
+          {
+            "name": "medal",
+            "type": "uint8"
           },
           {
             "name": "number_scaled",
@@ -390,13 +387,8 @@
   {
     "stateMutability": "view",
     "type": "function",
-    "name": "round_ids",
-    "inputs": [
-      {
-        "name": "arg0",
-        "type": "uint8"
-      }
-    ],
+    "name": "round_id",
+    "inputs": [],
     "outputs": [
       {
         "name": "",
@@ -411,14 +403,10 @@
     "inputs": [
       {
         "name": "arg0",
-        "type": "uint8"
-      },
-      {
-        "name": "arg1",
         "type": "uint256"
       },
       {
-        "name": "arg2",
+        "name": "arg1",
         "type": "address"
       }
     ],

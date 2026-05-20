@@ -1,145 +1,72 @@
-import { useEffect, useState, useCallback } from "react";
-import { motion, AnimatePresence } from "motion/react";
-import { useStore } from "../store/useStore.js";
-import { fetchLeaderboard } from "../lib/api.js";
-
-const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
-
-const RANK_ICONS = ["🥇", "🥈", "🥉"];
-
-// Score helper: diamond worth 3, gold 2, silver 1
-const score = (p) => p.diamond * 3 + p.gold * 2 + p.silver;
+// src/components/Leaderboard.jsx
+import { useState, useEffect } from "react";
+import { getLeaderboard } from "../lib/api.js";
+import { MEDAL_EMOJI } from "../store/useStore.js";
 
 export default function Leaderboard() {
-  const { account, leaderboard, leaderboardTotal, setLeaderboard } = useStore();
-  const [loading,  setLoading]  = useState(false);
-  const [filter,   setFilter]   = useState("all"); // "all" | "diamond" | "gold" | "silver"
-  const [lastFetch, setLastFetch] = useState(0);
+  const [players, setPlayers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState(null);
 
-  const load = useCallback(async (force = false) => {
-    if (!force && Date.now() - lastFetch < 10_000) return; // 10s cache
-    setLoading(true);
-    try {
-      const data = await fetchLeaderboard();
-      setLeaderboard(data.players || [], data.total || 0);
-      setLastFetch(Date.now());
-    } catch (e) {
-      console.warn("leaderboard:", e);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      try {
+        const { players } = await getLeaderboard();
+        if (!cancelled) setPlayers(players ?? []);
+      } catch (err) {
+        if (!cancelled) setError(err.message ?? "Failed to load leaderboard");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
-  }, [lastFetch, setLeaderboard]);
 
-  useEffect(() => { load(true); }, []);
-
-  // Apply filter + sort
-  const filtered = leaderboard
-    .filter((p) => {
-      if (filter === "diamond") return p.diamond > 0;
-      if (filter === "gold")    return p.gold    > 0;
-      if (filter === "silver")  return p.silver  > 0;
-      return true;
-    })
-    .sort((a, b) => score(b) - score(a));
-
-  const myEntry = account
-    ? leaderboard.find((p) => p.address.toLowerCase() === account.toLowerCase())
-    : null;
+    load();
+    const interval = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   return (
-    <div className="leaderboard">
-      {/* Header */}
-      <div className="lb-header">
-        <div className="lb-title">🏆 Leaderboard</div>
-        <div className="lb-sub">{leaderboardTotal} players · sorted by medal score</div>
-        <button className="btn-refresh" onClick={() => load(true)} disabled={loading}>
-          {loading ? "⟳" : "↻ Refresh"}
-        </button>
-      </div>
+    <section className="leaderboard">
+      <h2 className="lb-title">Leaderboard</h2>
 
-      {/* My position callout */}
-      {myEntry && (
-        <motion.div className="my-rank-card"
-          initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}>
-          <span className="mrc-label">Your rank</span>
-          <span className="mrc-rank">#{myEntry.rank}</span>
-          <span className="mrc-medals">
-            💎{myEntry.diamond} · 🥇{myEntry.gold} · 🥈{myEntry.silver}
-          </span>
-          <span className="mrc-score">{score(myEntry)} pts</span>
-        </motion.div>
+      {loading && <p className="lb-loading">Loading…</p>}
+      {error   && <p className="lb-error">{error}</p>}
+
+      {!loading && players.length === 0 && (
+        <p className="lb-empty">No medals awarded yet. Be first!</p>
       )}
 
-      {/* Filter tabs */}
-      <div className="lb-filters">
-        {[
-          { key: "all",     label: "All" },
-          { key: "diamond", label: "💎 Diamond" },
-          { key: "gold",    label: "🥇 Gold" },
-          { key: "silver",  label: "🥈 Silver" },
-        ].map((f) => (
-          <button
-            key={f.key}
-            className={`lbf-btn${filter === f.key ? " active" : ""}`}
-            onClick={() => setFilter(f.key)}
-          >{f.label}</button>
-        ))}
-      </div>
-
-      {/* Table header */}
-      <div className="lb-row lb-head">
-        <span className="lbc-rank">#</span>
-        <span className="lbc-addr">Player</span>
-        <span className="lbc-medals">💎 Gold Silver</span>
-        <span className="lbc-score">Score</span>
-      </div>
-
-      {/* Rows */}
-      <div className="lb-body">
-        {loading && filtered.length === 0 && (
-          <div className="lb-loading">
-            <div className="ring sm" />
-            <span>Loading…</span>
-          </div>
-        )}
-        {!loading && filtered.length === 0 && (
-          <div className="lb-empty">No players yet — be the first to win a medal!</div>
-        )}
-        <AnimatePresence initial={false}>
-          {filtered.map((p, i) => {
-            const isMe = account && p.address.toLowerCase() === account.toLowerCase();
-            const rankIcon = i < 3 ? RANK_ICONS[i] : null;
-            return (
-              <motion.div
-                key={p.address}
-                className={`lb-row lb-data${isMe ? " is-me" : ""}`}
-                initial={{ opacity: 0, x: -8 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.2, delay: i * 0.02 }}
-              >
-                <span className="lbc-rank">
-                  {rankIcon || <span className="rank-num">#{i + 1}</span>}
-                </span>
-                <span className="lbc-addr">
-                  {short(p.address)}
-                  {isMe && <span className="you-badge">YOU</span>}
-                </span>
-                <span className="lbc-medals">
-                  <span className="medal-val diamond">{p.diamond}</span>
-                  <span className="medal-val gold">{p.gold}</span>
-                  <span className="medal-val silver">{p.silver}</span>
-                </span>
-                <span className="lbc-score">{score(p)}</span>
-              </motion.div>
-            );
-          })}
-        </AnimatePresence>
-      </div>
-
-      {/* Legend */}
-      <div className="lb-legend">
-        <span>Score: 💎×3 + 🥇×2 + 🥈×1</span>
-      </div>
-    </div>
+      {players.length > 0 && (
+        <table className="lb-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Player</th>
+              <th title="Diamond">{MEDAL_EMOJI[2]}</th>
+              <th title="Gold">{MEDAL_EMOJI[1]}</th>
+              <th title="Silver">{MEDAL_EMOJI[0]}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {players.map((p) => (
+              <tr key={p.address} className={p.rank <= 3 ? `lb-top-${p.rank}` : ""}>
+                <td className="lb-rank">
+                  {p.rank === 1 ? "🥇" : p.rank === 2 ? "🥈" : p.rank === 3 ? "🥉" : p.rank}
+                </td>
+                <td className="lb-addr">
+                  {p.address.slice(0, 6)}…{p.address.slice(-4)}
+                </td>
+                <td className="lb-medal lb-diamond">{p.diamond || "—"}</td>
+                <td className="lb-medal lb-gold">{p.gold    || "—"}</td>
+                <td className="lb-medal lb-silver">{p.silver  || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }

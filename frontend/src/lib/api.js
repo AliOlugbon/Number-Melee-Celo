@@ -1,48 +1,92 @@
-import { API_BASE } from "./contracts.js";
+// src/lib/api.js
+// HTTP client for the NumberGuess backend. No tiers.
 
-const get  = (path) => fetch(`${API_BASE}${path}`);
-const post = (path, body) =>
-  fetch(`${API_BASE}${path}`, {
-    method: "POST",
+const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+
+async function req(path, opts = {}) {
+  const res = await fetch(`${BASE}${path}`, opts);
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(json.error ?? "api error"), { status: res.status, body: json });
+  return json;
+}
+
+// ── Round ─────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/commitment
+ * Backend generates secret, returns commitment bytes32 hex.
+ * The first joiner passes this into join() on-chain.
+ * @returns {{ commitment: string, already_open: boolean }}
+ */
+export function getCommitment() {
+  return req("/api/commitment");
+}
+
+/**
+ * GET /api/round
+ * @returns {{
+ *   round_id: number, phase: number, player_count: number,
+ *   opened_at: number, started_at: number,
+ *   max_players: number, solo_remaining: number, is_competitive: boolean
+ * }}
+ */
+export function getRound() {
+  return req("/api/round");
+}
+
+// ── Guess ─────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/guess
+ * @param {string} address  checksummed player address
+ * @param {string} guess    display string e.g. "42.75"
+ * @returns {{ hint: "higher"|"lower"|"correct", guess_scaled: number, idx: number }}
+ */
+export function postGuess(address, guess) {
+  return req("/api/guess", {
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body:    JSON.stringify({ address, guess }),
   });
-
-export async function fetchRound(tier) {
-  const res = await get(`/api/round/${tier}`);
-  return res.json();
 }
 
-export async function sendGuess({ tier, address, guess }) {
-  const res = await post("/api/guess", {
-    tier,
-    address,
-    guess: parseFloat(guess).toFixed(2),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    const err = Object.assign(
-      new Error(data.error || "Guess failed"),
-      { status: res.status, data }
-    );
-    throw err;
-  }
-  return data;
+// ── History ───────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/history?since=N
+ * @param {number} since  start index (0-based)
+ * @returns {{ total: number, items: Array }}
+ */
+export function getHistory(since = 0) {
+  return req(`/api/history?since=${since}`);
 }
 
-export async function fetchHistory(tier, since = 0) {
-  const res = await get(`/api/history/${tier}?since=${since}`);
-  if (!res.ok) return { items: [], total: 0 };
-  return res.json();
+// ── Cooldown ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/cooldown?address=0x…
+ * @returns {{ remaining: number }}
+ */
+export function getCooldown(address) {
+  return req(`/api/cooldown?address=${encodeURIComponent(address)}`);
 }
 
-export async function fetchLeaderboard() {
-  const res = await get("/api/leaderboard");
-  return res.json(); // { players: [...], total }
+// ── Leaderboard ───────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/leaderboard
+ * @returns {{ players: Array, total: number }}
+ */
+export function getLeaderboard() {
+  return req("/api/leaderboard");
 }
 
-export async function fetchMedals(address) {
-  const res = await get(`/api/medals/${address}`);
-  if (!res.ok) return { silver: 0, gold: 0, diamond: 0 };
-  return res.json();
+// ── Medals ────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/medals/:address
+ * @returns {{ address: string, silver: number, gold: number, diamond: number }}
+ */
+export function getMedals(address) {
+  return req(`/api/medals/${address}`);
 }

@@ -1,43 +1,124 @@
-import { parseAbi } from "viem";
+// src/lib/contracts.js
+// ABI for NumberGuess.vy — single round, no tiers.
 
 export const CONTRACT_ADDRESS =
-  import.meta.env.VITE_CONTRACT_ADDRESS || "0x0000000000000000000000000000000000000000";
-export const API_BASE =
-  import.meta.env.VITE_API_BASE || "http://localhost:3001";
+  import.meta.env.VITE_CONTRACT_ADDRESS ?? "0x0000000000000000000000000000000000000000";
 
-// ─── Tier config ──────────────────────────────────────────────────────────────
-export const TIERS = [
+export const ABI = [
+  // ── Write ────────────────────────────────────────────────────────────────
   {
-    id: 0, name: "Silver", emoji: "🥈", maxPlayers: 25,
-    accent: "#94a3b8", accentGlow: "rgba(148,163,184,.25)",
-    medalEmoji: "🥈",
+    name: "join",
+    type: "function",
+    inputs: [{ name: "commitment", type: "bytes32" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  // ── Views ─────────────────────────────────────────────────────────────────
+  {
+    name: "get_round",
+    type: "function",
+    inputs: [],
+    outputs: [
+      { name: "round_id",     type: "uint256" },
+      { name: "phase",        type: "uint8"   },
+      { name: "player_count", type: "uint256" },
+      { name: "opened_at",    type: "uint256" },
+      { name: "started_at",   type: "uint256" },
+    ],
+    stateMutability: "view",
   },
   {
-    id: 1, name: "Gold", emoji: "🥇", maxPlayers: 18,
-    accent: "#f0b429", accentGlow: "rgba(240,180,41,.25)",
-    medalEmoji: "🥇",
+    name: "get_medals",
+    type: "function",
+    inputs: [{ name: "player", type: "address" }],
+    outputs: [
+      { name: "silver",  type: "uint256" },
+      { name: "gold",    type: "uint256" },
+      { name: "diamond", type: "uint256" },
+    ],
+    stateMutability: "view",
   },
   {
-    id: 2, name: "Diamond", emoji: "💎", maxPlayers: 10,
-    accent: "#67e8f9", accentGlow: "rgba(103,232,249,.25)",
-    medalEmoji: "💎",
+    name: "is_joined",
+    type: "function",
+    inputs: [{ name: "player", type: "address" }],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+  {
+    name: "solo_time_remaining",
+    type: "function",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    name: "get_constants",
+    type: "function",
+    inputs: [],
+    outputs: [
+      { name: "max_players",   type: "uint256" },
+      { name: "solo_diamond",  type: "uint256" },
+      { name: "solo_gold",     type: "uint256" },
+      { name: "solo_timeout",  type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  // ── Events ────────────────────────────────────────────────────────────────
+  {
+    name: "RoundOpened",
+    type: "event",
+    inputs: [
+      { name: "round_id",   type: "uint256", indexed: true  },
+      { name: "opener",     type: "address", indexed: false },
+      { name: "commitment", type: "bytes32", indexed: false },
+    ],
+  },
+  {
+    name: "PlayerJoined",
+    type: "event",
+    inputs: [
+      { name: "round_id", type: "uint256", indexed: true  },
+      { name: "player",   type: "address", indexed: true  },
+      { name: "count",    type: "uint256", indexed: false },
+    ],
+  },
+  {
+    name: "CompetitiveModeActivated",
+    type: "event",
+    inputs: [
+      { name: "round_id", type: "uint256", indexed: true  },
+      { name: "count",    type: "uint256", indexed: false },
+    ],
+  },
+  {
+    name: "RoundWon",
+    type: "event",
+    inputs: [
+      { name: "round_id",      type: "uint256", indexed: true  },
+      { name: "winner",        type: "address", indexed: true  },
+      { name: "medal",         type: "uint8",   indexed: false },
+      { name: "number_scaled", type: "uint256", indexed: false },
+      { name: "salt",          type: "bytes32", indexed: false },
+      { name: "total_players", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    name: "MedalAwarded",
+    type: "event",
+    inputs: [
+      { name: "player",  type: "address", indexed: true  },
+      { name: "medal",   type: "uint8",   indexed: true  },
+      { name: "silver",  type: "uint256", indexed: false },
+      { name: "gold",    type: "uint256", indexed: false },
+      { name: "diamond", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    name: "RoundAborted",
+    type: "event",
+    inputs: [
+      { name: "round_id", type: "uint256", indexed: true },
+    ],
   },
 ];
-
-// ─── ABI ─────────────────────────────────────────────────────────────────────
-export const ABI = parseAbi([
-  // views
-  "function get_round(uint8 tier) view returns (uint256, uint8, uint256, uint256)",
-  "function get_medals(address player) view returns (uint256, uint256, uint256)",
-  "function is_joined(uint8 tier, address player) view returns (bool)",
-  "function max_players(uint8 tier) view returns (uint256)",
-  // writes  — NO value transfers, pure gas
-  "function join(uint8 tier)",
-  // events
-  "event RoundOpened(uint8 indexed tier, uint256 indexed round_id, address opener)",
-  "event PlayerJoined(uint8 indexed tier, uint256 indexed round_id, address indexed player, uint256 count)",
-  "event RoundStarted(uint8 indexed tier, uint256 indexed round_id, bytes32 commitment)",
-  "event RoundWon(uint8 indexed tier, uint256 indexed round_id, address indexed winner, uint256 number_scaled, bytes32 salt, uint256 total_players)",
-  "event MedalAwarded(address indexed player, uint8 indexed tier, uint256 silver, uint256 gold, uint256 diamond)",
-  "event RoundAborted(uint8 indexed tier, uint256 indexed round_id)",
-]);

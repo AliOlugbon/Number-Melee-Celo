@@ -1,106 +1,123 @@
+// src/store/useStore.js
 import { create } from "zustand";
+import { subscribeWithSelector } from "zustand/middleware";
 
-// phase: null=not loaded yet, 0=lobby, 1=active, 2=done
-const defaultTierState = () => ({
-  roundId:     0n,
-  phase:       null,
-  playerCount: 0,
-  startedAt:   0n,
-  joined:      false,
-  myGuesses:   0,
-});
+// Phase constants mirror the contract
+export const PHASE_SOLO        = 0;
+export const PHASE_COMPETITIVE = 1;
+export const PHASE_DONE        = 2;
 
-export const useStore = create((set, get) => ({
-  // ── Wallet ─────────────────────────────────────────────────────────────────
-  account:      null,
-  pubClient:    null,
-  walClient:    null,
-  isMiniPay:    false,
-  autoConnecting: false,
+export const MEDAL_SILVER  = 0;
+export const MEDAL_GOLD    = 1;
+export const MEDAL_DIAMOND = 2;
 
-  setWallet: ({ account, pubClient, walClient }) =>
-    set({ account, pubClient, walClient }),
-  setIsMiniPay:    (v) => set({ isMiniPay: v }),
-  setAutoConnecting:(v) => set({ autoConnecting: v }),
+export const MEDAL_LABEL = { 0: "Silver",  1: "Gold",    2: "Diamond" };
+export const MEDAL_EMOJI = { 0: "🥈",     1: "🥇",     2: "💎"     };
 
-  // ── Navigation ─────────────────────────────────────────────────────────────
-  activeTier: 0,
-  activeTab:  "play",
+const useStore = create(
+  subscribeWithSelector((set, get) => ({
+    // ── Server health ────────────────────────────────────────────────────────
+    serverOnline: true,
+    setServerOnline: (v) => set({ serverOnline: v }),
 
-  setActiveTier: (tier) =>
-    set({
-      activeTier: tier,
-      hint:        { type: "", icon: "●", msg: "Waiting for round…" },
-      digits:      ["?", "?", "?", "?"],
-      digitClass:  "idle",
-      history:     [],
-      histFetched: 0,
-    }),
-  setActiveTab: (tab) => set({ activeTab: tab }),
+    // ── Wallet ───────────────────────────────────────────────────────────────
+    address:   null,      // lowercase hex
+    isMiniPay: false,
 
-  // ── Tier round states ──────────────────────────────────────────────────────
-  tiers: [defaultTierState(), defaultTierState(), defaultTierState()],
+    setWallet: (address, isMiniPay = false) =>
+      set({ address: address?.toLowerCase() ?? null, isMiniPay }),
 
-  updateTier: (tier, patch) =>
-    set((s) => {
-      const tiers = [...s.tiers];
-      tiers[tier] = { ...tiers[tier], ...patch };
-      return { tiers };
-    }),
+    // ── Round ────────────────────────────────────────────────────────────────
+    roundId:       0,
+    phase:         PHASE_DONE,
+    playerCount:   0,
+    openedAt:      0,     // block.timestamp of first join (unix seconds)
+    startedAt:     0,
+    isCompetitive: false,
+    soloRemaining: 0,     // seconds — server-provided, client ticks down locally
+    joined:        false,
 
-  // ── Number display ─────────────────────────────────────────────────────────
-  digits:     ["?", "?", "?", "?"],
-  digitClass: "idle",
+    // Batched update — only writes keys that actually changed to keep
+    // renders minimal.
+    setRound: (next) =>
+      set((prev) => {
+        const patch = {};
+        if (next.roundId       !== undefined && next.roundId       !== prev.roundId)       patch.roundId       = next.roundId;
+        if (next.phase         !== undefined && next.phase         !== prev.phase)         patch.phase         = next.phase;
+        if (next.playerCount   !== undefined && next.playerCount   !== prev.playerCount)   patch.playerCount   = next.playerCount;
+        if (next.openedAt      !== undefined && next.openedAt      !== prev.openedAt)      patch.openedAt      = next.openedAt;
+        if (next.startedAt     !== undefined && next.startedAt     !== prev.startedAt)     patch.startedAt     = next.startedAt;
+        if (next.soloRemaining !== undefined && next.soloRemaining !== prev.soloRemaining) patch.soloRemaining = next.soloRemaining;
+        if (next.joined        !== undefined && next.joined        !== prev.joined)        patch.joined        = next.joined;
+        // Derived
+        if (patch.phase !== undefined) patch.isCompetitive = patch.phase === PHASE_COMPETITIVE;
+        // Mark server as online on successful poll
+        patch.serverOnline = true;
+        return patch;
+      }),
 
-  setDigits: (digits, cls) => set({ digits, digitClass: cls }),
+    // ── Guess / hint ─────────────────────────────────────────────────────────
+    lastHint:     null,   // "higher" | "lower" | "correct"
+    lastGuess:    null,   // display string e.g. "42.75"
+    guessCount:   0,
+    cooldownSecs: 0,
 
-  revealNumber: (scaled) => {
-    const s = String(scaled).padStart(4, "0");
-    set({ digits: [s[0], s[1], s[2], s[3]], digitClass: "solved" });
-  },
+    setHint: (hint, guess) =>
+      set((s) => ({ lastHint: hint, lastGuess: guess, guessCount: s.guessCount + 1 })),
 
-  resetDisplay: () =>
-    set({
-      digits:     ["?", "?", "?", "?"],
-      digitClass: "idle",
-      hint:       { type: "", icon: "●", msg: "Waiting for round…" },
-    }),
+    setCooldown: (secs) => set({ cooldownSecs: Math.max(0, secs) }),
+    clearHint:   ()     => set({ lastHint: null, lastGuess: null }),
 
-  // ── Hint ───────────────────────────────────────────────────────────────────
-  hint: { type: "", icon: "●", msg: "Waiting for round…" },
-  setHint: (type, icon, msg) => set({ hint: { type, icon, msg } }),
+    // ── History ──────────────────────────────────────────────────────────────
+    history:    [],
+    historyIdx: 0,
 
-  // ── History ────────────────────────────────────────────────────────────────
-  history:     [],
-  histFetched: 0,
-  appendHistory: (items) =>
-    set((s) => ({
-      history:     [...items, ...s.history],
-      histFetched: s.histFetched + items.length,
-    })),
-  clearHistory: () => set({ history: [], histFetched: 0 }),
+    appendHistory: (items) =>
+      set((s) => ({
+        history:    [...s.history, ...items],
+        historyIdx: s.historyIdx + items.length,
+      })),
 
-  // ── Feed ───────────────────────────────────────────────────────────────────
-  feed: [],
-  addFeed: (icon, who, msg, cls = "") =>
-    set((s) => ({
-      feed: [
-        { id: Date.now() + Math.random(), icon, who, msg, cls },
-        ...s.feed,
-      ].slice(0, 60),
-    })),
+    clearHistory: () => set({ history: [], historyIdx: 0 }),
 
-  // ── Cooldown ───────────────────────────────────────────────────────────────
-  cooldownEnd: 0,
-  startCooldown: (secs) => set({ cooldownEnd: Date.now() + secs * 1000 }),
+    // ── Feed ─────────────────────────────────────────────────────────────────
+    feed: [],
 
-  // ── My medals ──────────────────────────────────────────────────────────────
-  myMedals: { silver: 0, gold: 0, diamond: 0 },
-  setMyMedals: (m) => set({ myMedals: m }),
+    pushFeed: (entry) =>
+      set((s) => ({ feed: [entry, ...s.feed].slice(0, 20) })),
 
-  // ── Leaderboard ────────────────────────────────────────────────────────────
-  leaderboard:      [],
-  leaderboardTotal: 0,
-  setLeaderboard: (players, total) =>
-    set({ leaderboard: players, leaderboardTotal: total }),
-}));
+    clearFeed: () => set({ feed: [] }),
+
+    // ── Medals ───────────────────────────────────────────────────────────────
+    medals: { silver: 0, gold: 0, diamond: 0 },
+    setMedals: (medals) => set({ medals }),
+
+    // ── UI ───────────────────────────────────────────────────────────────────
+    activeTab:  "play",
+    setTab:     (tab) => set({ activeTab: tab }),
+    isJoining:  false,
+    isGuessing: false,
+    setJoining:  (v) => set({ isJoining: v }),
+    setGuessing: (v) => set({ isGuessing: v }),
+
+    // ── Round reset ───────────────────────────────────────────────────────────
+    resetRound: () =>
+      set({
+        phase:         PHASE_DONE,
+        playerCount:   0,
+        openedAt:      0,
+        startedAt:     0,
+        isCompetitive: false,
+        soloRemaining: 0,
+        joined:        false,
+        lastHint:      null,
+        lastGuess:     null,
+        guessCount:    0,
+        cooldownSecs:  0,
+        history:       [],
+        historyIdx:    0,
+      }),
+  }))
+);
+
+export { useStore };
