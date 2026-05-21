@@ -1,66 +1,44 @@
-// src/components/Header.jsx
-import { useStore, MEDAL_EMOJI } from "../store/useStore.js";
+import { useStore } from "../store/useStore.js";
 
 export default function Header() {
   const { address, isMiniPay, medals, activeTab, setTab } = useStore();
-
-  const shortAddr = address
-    ? `${address.slice(0, 6)}…${address.slice(-4)}`
-    : null;
+  const short = address ? `${address.slice(0,6)}…${address.slice(-4)}` : null;
 
   return (
-    <header className="header">
-      <div className="header-brand">
-        <span className="header-logo">🔢</span>
-        <span className="header-title">NumMelee</span>
+    <header className="hdr">
+      <div className="hdr-brand">
+        <h1 className="hdr-title">
+          <span className="hdr-num">NUM</span><span className="hdr-melee">MELEE</span>
+        </h1>
+        <p className="hdr-sub">Celo&nbsp;·&nbsp;Medal&nbsp;Challenge</p>
       </div>
 
-      <nav className="header-tabs">
-        <button
-          className={`tab-btn ${activeTab === "play" ? "active" : ""}`}
-          onClick={() => setTab("play")}
-        >
-          Play
+      <nav className="hdr-nav">
+        <button className={`nav-btn${activeTab==="play"?"  nav-btn--on":""}`} onClick={() => setTab("play")}>
+          <span>🎮</span> Play
         </button>
-        <button
-          className={`tab-btn ${activeTab === "leaderboard" ? "active" : ""}`}
-          onClick={() => setTab("leaderboard")}
-        >
-          Board
+        <button className={`nav-btn${activeTab==="leaderboard"?" nav-btn--on":""}`} onClick={() => setTab("leaderboard")}>
+          <span>🏆</span> Board
         </button>
       </nav>
 
-      <div className="header-right">
+      <div className="hdr-row">
+        <span className="hdr-medal hdr-d">💎 {medals.diamond}</span>
+        <span className="hdr-medal hdr-g">🥇 {medals.gold}</span>
+        <span className="hdr-medal hdr-s">🥈 {medals.silver}</span>
+
         {address ? (
           <>
-            {/* Medal badges */}
-            <div className="header-medals">
-              {medals.diamond > 0 && (
-                <span className="medal-badge diamond" title="Diamond">
-                  {MEDAL_EMOJI[2]} {medals.diamond}
-                </span>
-              )}
-              {medals.gold > 0 && (
-                <span className="medal-badge gold" title="Gold">
-                  {MEDAL_EMOJI[1]} {medals.gold}
-                </span>
-              )}
-              {medals.silver > 0 && (
-                <span className="medal-badge silver" title="Silver">
-                  {MEDAL_EMOJI[0]} {medals.silver}
-                </span>
-              )}
-            </div>
-
-            <span className={`wallet-badge ${isMiniPay ? "minipay" : ""}`}>
-              {isMiniPay && <span className="minipay-dot" title="MiniPay" />}
-              {shortAddr}
-            </span>
+            <span className="hdr-dot" />
+            <span className="hdr-addr">{short}</span>
+            {isMiniPay && <span className="hdr-mp">MiniPay</span>}
           </>
         ) : (
-          <span className="wallet-badge disconnected">No wallet</span>
+          <span className="hdr-nowallet">No wallet</span>
         )}
       </div>
+
+      <div className="hdr-divider" />
     </header>
   );
 }

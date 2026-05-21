@@ -1,5 +1,7 @@
 // src/hooks/useChainSync.js
-//
+// Polls /api/round every 4 s.
+// No store.subscribe() calls — uses normal React useEffect with dependencies.
+// joined is persisted in sessionStorage to survive page refresh without flicker.
 
 import { useEffect, useRef } from "react";
 import { useStore, PHASE_DONE, PHASE_SOLO } from "../store/useStore.js";
@@ -9,45 +11,27 @@ import { readIsJoined } from "../lib/viem.js";
 const POLL_MS      = 4_000;
 const MEDALS_EVERY = 3;
 
-// ── sessionStorage helpers ────────────────────────────────────────────────────
-
-function joinedKey(address, roundId) {
-  return `ng_joined_${address?.toLowerCase()}_${roundId}`;
-}
-
-function loadJoined(address, roundId) {
-  if (!address || !roundId) return false;
-  try { return sessionStorage.getItem(joinedKey(address, roundId)) === "1"; }
+function joinedKey(addr, rid) { return `ng_j_${addr}_${rid}`; }
+function loadJoined(addr, rid) {
+  try { return !!addr && !!rid && sessionStorage.getItem(joinedKey(addr, rid)) === "1"; }
   catch { return false; }
 }
-
-function saveJoined(address, roundId, value) {
-  if (!address || !roundId) return;
-  try {
-    if (value) sessionStorage.setItem(joinedKey(address, roundId), "1");
-    else       sessionStorage.removeItem(joinedKey(address, roundId));
-  } catch {}
+function saveJoined(addr, rid) {
+  try { sessionStorage.setItem(joinedKey(addr, rid), "1"); } catch {}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function useChainSync() {
-  const store = useStore();
+  // Read address directly each render — used as dep for the poll effect
+  const address = useStore((s) => s.address);
 
-  const addressRef   = useRef(store.address);
+  // Refs that the async poll loop reads without needing effect restarts
   const joinedRef    = useRef(false);
-  const prevRoundRef = useRef(-1);   // -1 = not yet seen (distinguishes from roundId=0)
+  const prevRoundRef = useRef(-1);
   const prevPhaseRef = useRef(PHASE_DONE);
-  const pollCountRef = useRef(0);
+  const pollCount    = useRef(0);
 
-  // Keep addressRef current; reset joined when wallet changes
-  useEffect(() => {
-    const prev = addressRef.current;
-    addressRef.current = store.address;
-    if (prev !== store.address) {
-      joinedRef.current = false;
-    }
-  }, [store.address]);
+  // Reset joined when wallet changes
+  useEffect(() => { joinedRef.current = false; }, [address]);
 
   useEffect(() => {
     let timer;
@@ -55,7 +39,6 @@ export function useChainSync() {
 
     async function poll() {
       if (cancelled) return;
-
       try {
         const data = await getRound();
         if (cancelled) return;
@@ -69,66 +52,53 @@ export function useChainSync() {
           solo_remaining: soloRemaining,
         } = data;
 
-        const address = addressRef.current;
+        const store = useStore.getState();
 
-        // ── New round detected ───────────────────────────────────────────────
-        const isNewRound = prevRoundRef.current !== -1 &&
-                           roundId !== prevRoundRef.current;
-        if (isNewRound) {
+        // New round
+        if (prevRoundRef.current !== -1 && roundId !== prevRoundRef.current) {
           joinedRef.current = false;
-          useStore.getState().resetRound();
-          useStore.getState().pushFeed({ type: "round_opened", roundId, ts: Date.now() });
+          store.resetRound();
+          store.pushFeed({ type: "round_opened", roundId, ts: Date.now() });
         }
 
-        // ── First load: restore joined from sessionStorage ───────────────────
+        // First load: restore joined from sessionStorage instantly
         if (prevRoundRef.current === -1 && roundId > 0 && address) {
-          const restored = loadJoined(address, roundId);
-          if (restored) joinedRef.current = true;
+          if (loadJoined(address, roundId)) joinedRef.current = true;
         }
 
-        // ── Phase transitions ────────────────────────────────────────────────
-        if (phase === 1 && prevPhaseRef.current === PHASE_SOLO) {
-          useStore.getState().pushFeed({ type: "competitive", playerCount, ts: Date.now() });
-        }
-        if (phase === PHASE_DONE && prevPhaseRef.current !== PHASE_DONE) {
-          useStore.getState().pushFeed({ type: "round_done", roundId, ts: Date.now() });
-        }
+        // Phase transitions
+        if (phase === 1 && prevPhaseRef.current === PHASE_SOLO)
+          store.pushFeed({ type: "competitive", playerCount, ts: Date.now() });
+        if (phase === PHASE_DONE && prevPhaseRef.current !== PHASE_DONE)
+          store.pushFeed({ type: "round_done", roundId, ts: Date.now() });
 
         prevRoundRef.current = roundId;
         prevPhaseRef.current = phase;
 
-        // ── Joined check — only when not already confirmed ───────────────────
+        // Confirm joined on-chain only when still unknown
         let joined = joinedRef.current;
         if (address && roundId > 0 && phase !== PHASE_DONE && !joinedRef.current) {
           try {
             const onChain = await readIsJoined(address);
             if (cancelled) return;
-            if (onChain) {
-              joinedRef.current = true;
-              joined = true;
-              saveJoined(address, roundId, true);   // persist for this tab
-            }
-          } catch (_) { /* keep existing */ }
+            if (onChain) { joinedRef.current = true; joined = true; saveJoined(address, roundId); }
+          } catch (_) {}
         }
 
-        // ── Single batched store write ───────────────────────────────────────
-        useStore.getState().setRound({
-          roundId, phase, playerCount,
-          openedAt, startedAt, soloRemaining,
-          joined,
-        });
+        // Single batched write — setRound diffs internally
+        store.setRound({ roundId, phase, playerCount, openedAt, startedAt, soloRemaining, joined });
 
-        // ── Medals (throttled) ───────────────────────────────────────────────
-        pollCountRef.current += 1;
-        if (address && pollCountRef.current % MEDALS_EVERY === 1) {
+        // Medals, throttled
+        pollCount.current += 1;
+        if (address && pollCount.current % MEDALS_EVERY === 1) {
           try {
             const m = await getMedals(address);
-            if (!cancelled) useStore.getState().setMedals(m);
+            if (!cancelled) store.setMedals({ silver: m.silver, gold: m.gold, diamond: m.diamond });
           } catch (_) {}
         }
 
       } catch (err) {
-        console.warn("[useChainSync] poll error:", err.message ?? err);
+        console.warn("[useChainSync]", err.message ?? err);
         useStore.getState().setServerOnline(false);
       } finally {
         if (!cancelled) timer = setTimeout(poll, POLL_MS);
@@ -137,5 +107,7 @@ export function useChainSync() {
 
     poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, []);
+
+  // Restart poll loop when wallet changes so joined is re-checked for new address
+  }, [address]);
 }

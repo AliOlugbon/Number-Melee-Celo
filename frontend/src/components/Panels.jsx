@@ -1,34 +1,28 @@
-// src/components/Panels.jsx
-
-import { useStore, MEDAL_EMOJI } from "../store/useStore.js";
+import { useStore } from "../store/useStore.js";
 
 // ── HistoryPanel ──────────────────────────────────────────────────────────────
-// Shows guess history for this round (from /api/history poll).
 
 export function HistoryPanel() {
   const { history, joined } = useStore();
-
   if (!joined) return null;
 
-  const recent = [...history].reverse().slice(0, 50);
+  const rows = [...history].reverse().slice(0, 50);
 
   return (
-    <section className="panel history-panel">
-      <h3 className="panel-title">Guesses</h3>
-      {recent.length === 0 ? (
+    <section className="panel">
+      <h3 className="panel-title">GUESSES</h3>
+      {rows.length === 0 ? (
         <p className="panel-empty">No guesses yet.</p>
       ) : (
-        <ul className="history-list">
-          {recent.map((r) => (
-            <li key={r.idx} className={`history-item hint-${r.hint}`}>
-              <span className="h-player">
-                {r.player.slice(0, 6)}…{r.player.slice(-3)}
+        <ul className="hist-list">
+          {rows.map((r) => (
+            <li key={r.idx} className={`hist-item hb--${r.hint}`}>
+              <span className="hist-player">
+                {r.player.slice(0,6)}…{r.player.slice(-3)}
               </span>
-              <span className="h-guess">{(r.guess_scaled / 100).toFixed(2)}</span>
-              <span className="h-hint">
-                {r.hint === "higher"  && "↑"}
-                {r.hint === "lower"   && "↓"}
-                {r.hint === "correct" && "✓"}
+              <span className="hist-val">{(r.guess_scaled / 100).toFixed(2)}</span>
+              <span className="hist-arrow">
+                {r.hint === "higher" ? "↑" : r.hint === "lower" ? "↓" : "✓"}
               </span>
             </li>
           ))}
@@ -39,44 +33,37 @@ export function HistoryPanel() {
 }
 
 // ── FeedPanel ─────────────────────────────────────────────────────────────────
-// Shows live round events: joins, mode changes, wins, aborts.
 
-const FEED_ICONS = {
-  round_opened:  "🆕",
-  competitive:   "⚔️",
-  join:          "👤",
-  round_done:    "🏁",
+const FEED_ICON = {
+  round_opened: "🆕",
+  competitive:  "⚔️",
+  join:         "👤",
+  round_done:   "🏁",
 };
 
-function feedLabel(entry) {
-  switch (entry.type) {
-    case "round_opened":
-      return `Round #${entry.roundId} opened`;
-    case "competitive":
-      return `Competitive! ${entry.playerCount} players`;
-    case "join":
-      return `${entry.player?.slice(0, 6) ?? ""}… joined`;
-    case "round_done":
-      return `Round #${entry.roundId} ended`;
-    default:
-      return entry.type;
+function feedLabel(e) {
+  switch (e.type) {
+    case "round_opened": return `Round #${e.roundId} opened`;
+    case "competitive":  return `Competitive! ${e.playerCount} players`;
+    case "join":         return `${e.player?.slice(0,6) ?? ""}… joined`;
+    case "round_done":   return `Round #${e.roundId} ended`;
+    default:             return e.type;
   }
 }
 
 export function FeedPanel() {
   const { feed } = useStore();
-
   return (
-    <section className="panel feed-panel">
-      <h3 className="panel-title">Feed</h3>
+    <section className="panel">
+      <h3 className="panel-title">FEED</h3>
       {feed.length === 0 ? (
         <p className="panel-empty">Nothing yet.</p>
       ) : (
         <ul className="feed-list">
-          {feed.map((entry, i) => (
+          {feed.map((e, i) => (
             <li key={i} className="feed-item">
-              <span className="feed-icon">{FEED_ICONS[entry.type] ?? "•"}</span>
-              <span className="feed-label">{feedLabel(entry)}</span>
+              <span className="feed-icon">{FEED_ICON[e.type] ?? "•"}</span>
+              <span className="feed-label">{feedLabel(e)}</span>
             </li>
           ))}
         </ul>

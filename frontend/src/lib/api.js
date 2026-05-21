@@ -1,92 +1,32 @@
-// src/lib/api.js
-// HTTP client for the NumberGuess backend. No tiers.
+// All fetch calls go to /api/… — Vite proxies these to http://localhost:3001
+// in dev. In production set VITE_API_URL to the deployed backend URL.
 
-const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+const BASE = import.meta.env.VITE_API_URL ?? "";
 
 async function req(path, opts = {}) {
-  const res = await fetch(`${BASE}${path}`, opts);
+  const res  = await fetch(`${BASE}${path}`, opts);
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(json.error ?? "api error"), { status: res.status, body: json });
+  if (!res.ok) {
+    const err = Object.assign(new Error(json.error ?? "api error"), {
+      status: res.status,
+      body:   json,
+    });
+    throw err;
+  }
   return json;
 }
 
-// ── Round ─────────────────────────────────────────────────────────────────────
+export const getCommitment = ()              => req("/api/commitment");
+export const getRound      = ()              => req("/api/round");
+export const getHistory    = (since = 0)     => req(`/api/history?since=${since}`);
+export const getCooldown   = (address)       => req(`/api/cooldown?address=${encodeURIComponent(address)}`);
+export const getLeaderboard= ()              => req("/api/leaderboard");
+export const getMedals     = (address)       => req(`/api/medals/${address}`);
 
-/**
- * GET /api/commitment
- * Backend generates secret, returns commitment bytes32 hex.
- * The first joiner passes this into join() on-chain.
- * @returns {{ commitment: string, already_open: boolean }}
- */
-export function getCommitment() {
-  return req("/api/commitment");
-}
-
-/**
- * GET /api/round
- * @returns {{
- *   round_id: number, phase: number, player_count: number,
- *   opened_at: number, started_at: number,
- *   max_players: number, solo_remaining: number, is_competitive: boolean
- * }}
- */
-export function getRound() {
-  return req("/api/round");
-}
-
-// ── Guess ─────────────────────────────────────────────────────────────────────
-
-/**
- * POST /api/guess
- * @param {string} address  checksummed player address
- * @param {string} guess    display string e.g. "42.75"
- * @returns {{ hint: "higher"|"lower"|"correct", guess_scaled: number, idx: number }}
- */
 export function postGuess(address, guess) {
   return req("/api/guess", {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ address, guess }),
   });
-}
-
-// ── History ───────────────────────────────────────────────────────────────────
-
-/**
- * GET /api/history?since=N
- * @param {number} since  start index (0-based)
- * @returns {{ total: number, items: Array }}
- */
-export function getHistory(since = 0) {
-  return req(`/api/history?since=${since}`);
-}
-
-// ── Cooldown ──────────────────────────────────────────────────────────────────
-
-/**
- * GET /api/cooldown?address=0x…
- * @returns {{ remaining: number }}
- */
-export function getCooldown(address) {
-  return req(`/api/cooldown?address=${encodeURIComponent(address)}`);
-}
-
-// ── Leaderboard ───────────────────────────────────────────────────────────────
-
-/**
- * GET /api/leaderboard
- * @returns {{ players: Array, total: number }}
- */
-export function getLeaderboard() {
-  return req("/api/leaderboard");
-}
-
-// ── Medals ────────────────────────────────────────────────────────────────────
-
-/**
- * GET /api/medals/:address
- * @returns {{ address: string, silver: number, gold: number, diamond: number }}
- */
-export function getMedals(address) {
-  return req(`/api/medals/${address}`);
 }

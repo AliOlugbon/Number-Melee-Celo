@@ -1,53 +1,29 @@
-// src/components/ErrorBoundary.jsx
 import { Component } from "react";
 
 export default class ErrorBoundary extends Component {
-  constructor(props) {
-    super(props);
-    this.state = { error: null, info: null };
-  }
+  state = { error: null };
 
-  static getDerivedStateFromError(error) {
-    return { error };
-  }
-
-  componentDidCatch(error, info) {
-    console.error("[ErrorBoundary]", error, info?.componentStack ?? "");
-    this.setState({ info });
-  }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(e, info) { console.error("[ErrorBoundary]", e, info?.componentStack); }
 
   render() {
-    if (this.state.error) {
-      const msg = this.state.error?.message ?? String(this.state.error);
-      const isNetwork = msg.includes("fetch") || msg.includes("network") ||
-                        msg.includes("Failed to fetch") || msg.includes("ECONNREFUSED");
+    const { error } = this.state;
+    if (!error) return this.props.children;
 
-      return (
-        <div className="error-boundary">
-          {isNetwork ? (
-            <>
-              <span className="error-icon">📡</span>
-              <p className="error-title">Backend offline</p>
-              <p className="error-sub">
-                Start <code>server.py</code> and refresh.
-              </p>
-            </>
-          ) : (
-            <>
-              <span className="error-icon">⚠️</span>
-              <p className="error-title">Something went wrong</p>
-              <p className="error-sub error-msg">{msg}</p>
-            </>
-          )}
-          <button
-            className="error-retry"
-            onClick={() => this.setState({ error: null, info: null })}
-          >
-            Retry
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
+    const isNetwork = /fetch|network|ECONNREFUSED|Failed to fetch/i.test(error.message ?? "");
+    return (
+      <div className="error-boundary">
+        <span className="error-icon">{isNetwork ? "📡" : "⚠️"}</span>
+        <p className="error-title">{isNetwork ? "Backend offline" : "Something went wrong"}</p>
+        <p className="error-sub">
+          {isNetwork
+            ? <><code>python server.py</code> not running — start it and refresh.</>
+            : error.message}
+        </p>
+        <button className="error-retry" onClick={() => this.setState({ error: null })}>
+          Retry
+        </button>
+      </div>
+    );
   }
 }

@@ -1,123 +1,89 @@
-// src/store/useStore.js
-import { create } from "zustand";
-import { subscribeWithSelector } from "zustand/middleware";
+// Plain zustand create() — no subscribeWithSelector middleware.
+// subscribeWithSelector changes the subscribe API and can cause silent failures
+// if the zustand version doesn't match expectations. Not needed here.
 
-// Phase constants mirror the contract
+import { create } from "zustand";
+
 export const PHASE_SOLO        = 0;
 export const PHASE_COMPETITIVE = 1;
 export const PHASE_DONE        = 2;
 
-export const MEDAL_SILVER  = 0;
-export const MEDAL_GOLD    = 1;
-export const MEDAL_DIAMOND = 2;
+export const MEDAL_EMOJI = { 0: "🥈", 1: "🥇", 2: "💎" };
+export const MEDAL_LABEL = { 0: "Silver", 1: "Gold", 2: "Diamond" };
 
-export const MEDAL_LABEL = { 0: "Silver",  1: "Gold",    2: "Diamond" };
-export const MEDAL_EMOJI = { 0: "🥈",     1: "🥇",     2: "💎"     };
+const useStore = create((set) => ({
+  // ── Server ─────────────────────────────────────────────────────────────────
+  serverOnline: true,
+  setServerOnline: (v) => set({ serverOnline: v }),
 
-const useStore = create(
-  subscribeWithSelector((set, get) => ({
-    // ── Server health ────────────────────────────────────────────────────────
-    serverOnline: true,
-    setServerOnline: (v) => set({ serverOnline: v }),
+  // ── Wallet ─────────────────────────────────────────────────────────────────
+  address:   null,
+  isMiniPay: false,
+  setWallet: (address, isMiniPay = false) =>
+    set({ address: address?.toLowerCase() ?? null, isMiniPay }),
 
-    // ── Wallet ───────────────────────────────────────────────────────────────
-    address:   null,      // lowercase hex
-    isMiniPay: false,
+  // ── Round ──────────────────────────────────────────────────────────────────
+  roundId:       0,
+  phase:         PHASE_DONE,
+  playerCount:   0,
+  openedAt:      0,
+  startedAt:     0,
+  isCompetitive: false,
+  soloRemaining: 0,
+  joined:        false,
 
-    setWallet: (address, isMiniPay = false) =>
-      set({ address: address?.toLowerCase() ?? null, isMiniPay }),
+  // Diff before writing — avoids re-rendering when nothing changed
+  setRound: (next) =>
+    set((prev) => {
+      const p = {};
+      const w = (k) => { if (next[k] !== undefined && next[k] !== prev[k]) p[k] = next[k]; };
+      w("roundId"); w("phase"); w("playerCount");
+      w("openedAt"); w("startedAt"); w("soloRemaining"); w("joined");
+      if (p.phase !== undefined) p.isCompetitive = p.phase === PHASE_COMPETITIVE;
+      p.serverOnline = true;
+      return p;
+    }),
 
-    // ── Round ────────────────────────────────────────────────────────────────
-    roundId:       0,
-    phase:         PHASE_DONE,
-    playerCount:   0,
-    openedAt:      0,     // block.timestamp of first join (unix seconds)
-    startedAt:     0,
-    isCompetitive: false,
-    soloRemaining: 0,     // seconds — server-provided, client ticks down locally
-    joined:        false,
+  // ── Hint / guess ───────────────────────────────────────────────────────────
+  lastHint:     null,
+  lastGuess:    null,
+  guessCount:   0,
+  cooldownSecs: 0,
+  setHint:     (hint, guess) => set((s) => ({ lastHint: hint, lastGuess: guess, guessCount: s.guessCount + 1 })),
+  setCooldown: (secs)        => set({ cooldownSecs: Math.max(0, secs) }),
+  clearHint:   ()            => set({ lastHint: null, lastGuess: null }),
 
-    // Batched update — only writes keys that actually changed to keep
-    // renders minimal.
-    setRound: (next) =>
-      set((prev) => {
-        const patch = {};
-        if (next.roundId       !== undefined && next.roundId       !== prev.roundId)       patch.roundId       = next.roundId;
-        if (next.phase         !== undefined && next.phase         !== prev.phase)         patch.phase         = next.phase;
-        if (next.playerCount   !== undefined && next.playerCount   !== prev.playerCount)   patch.playerCount   = next.playerCount;
-        if (next.openedAt      !== undefined && next.openedAt      !== prev.openedAt)      patch.openedAt      = next.openedAt;
-        if (next.startedAt     !== undefined && next.startedAt     !== prev.startedAt)     patch.startedAt     = next.startedAt;
-        if (next.soloRemaining !== undefined && next.soloRemaining !== prev.soloRemaining) patch.soloRemaining = next.soloRemaining;
-        if (next.joined        !== undefined && next.joined        !== prev.joined)        patch.joined        = next.joined;
-        // Derived
-        if (patch.phase !== undefined) patch.isCompetitive = patch.phase === PHASE_COMPETITIVE;
-        // Mark server as online on successful poll
-        patch.serverOnline = true;
-        return patch;
-      }),
+  // ── History ────────────────────────────────────────────────────────────────
+  history:    [],
+  historyIdx: 0,
+  appendHistory: (items) =>
+    set((s) => ({ history: [...s.history, ...items], historyIdx: s.historyIdx + items.length })),
+  clearHistory: () => set({ history: [], historyIdx: 0 }),
 
-    // ── Guess / hint ─────────────────────────────────────────────────────────
-    lastHint:     null,   // "higher" | "lower" | "correct"
-    lastGuess:    null,   // display string e.g. "42.75"
-    guessCount:   0,
-    cooldownSecs: 0,
+  // ── Feed ───────────────────────────────────────────────────────────────────
+  feed: [],
+  pushFeed:  (e) => set((s) => ({ feed: [e, ...s.feed].slice(0, 20) })),
+  clearFeed: ()  => set({ feed: [] }),
 
-    setHint: (hint, guess) =>
-      set((s) => ({ lastHint: hint, lastGuess: guess, guessCount: s.guessCount + 1 })),
+  // ── Medals ─────────────────────────────────────────────────────────────────
+  medals: { silver: 0, gold: 0, diamond: 0 },
+  setMedals: (m) => set({ medals: m }),
 
-    setCooldown: (secs) => set({ cooldownSecs: Math.max(0, secs) }),
-    clearHint:   ()     => set({ lastHint: null, lastGuess: null }),
+  // ── UI ─────────────────────────────────────────────────────────────────────
+  activeTab:   "play",
+  setTab:      (t) => set({ activeTab: t }),
+  isJoining:   false,
+  isGuessing:  false,
+  setJoining:  (v) => set({ isJoining: v }),
+  setGuessing: (v) => set({ isGuessing: v }),
 
-    // ── History ──────────────────────────────────────────────────────────────
-    history:    [],
-    historyIdx: 0,
-
-    appendHistory: (items) =>
-      set((s) => ({
-        history:    [...s.history, ...items],
-        historyIdx: s.historyIdx + items.length,
-      })),
-
-    clearHistory: () => set({ history: [], historyIdx: 0 }),
-
-    // ── Feed ─────────────────────────────────────────────────────────────────
-    feed: [],
-
-    pushFeed: (entry) =>
-      set((s) => ({ feed: [entry, ...s.feed].slice(0, 20) })),
-
-    clearFeed: () => set({ feed: [] }),
-
-    // ── Medals ───────────────────────────────────────────────────────────────
-    medals: { silver: 0, gold: 0, diamond: 0 },
-    setMedals: (medals) => set({ medals }),
-
-    // ── UI ───────────────────────────────────────────────────────────────────
-    activeTab:  "play",
-    setTab:     (tab) => set({ activeTab: tab }),
-    isJoining:  false,
-    isGuessing: false,
-    setJoining:  (v) => set({ isJoining: v }),
-    setGuessing: (v) => set({ isGuessing: v }),
-
-    // ── Round reset ───────────────────────────────────────────────────────────
-    resetRound: () =>
-      set({
-        phase:         PHASE_DONE,
-        playerCount:   0,
-        openedAt:      0,
-        startedAt:     0,
-        isCompetitive: false,
-        soloRemaining: 0,
-        joined:        false,
-        lastHint:      null,
-        lastGuess:     null,
-        guessCount:    0,
-        cooldownSecs:  0,
-        history:       [],
-        historyIdx:    0,
-      }),
-  }))
-);
+  // ── Reset ──────────────────────────────────────────────────────────────────
+  resetRound: () => set({
+    phase: PHASE_DONE, playerCount: 0, openedAt: 0, startedAt: 0,
+    isCompetitive: false, soloRemaining: 0, joined: false,
+    lastHint: null, lastGuess: null, guessCount: 0,
+    cooldownSecs: 0, history: [], historyIdx: 0,
+  }),
+}));
 
 export { useStore };
