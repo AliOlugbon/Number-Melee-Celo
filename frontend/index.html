@@ -1,33 +1,139 @@
-<!-- <!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-    <meta name="talentapp:project_verification" content="67a752d58672d6e527d4aa8cdc861daf3c66fc32c9bd092b87f2894ed301f9ea013bf6e00474ba67c8416ecf53efe47c64360ac93f19b2162608aa33f6d2f145">
-    <title>NumMelee</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=IBM+Plex+Mono:wght@400;600&display=swap"
-      rel="stylesheet"
-    />
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html> -->
-
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-    <meta name="talentapp:project_verification" content="67a752d58672d6e527d4aa8cdc861daf3c66fc32c9bd092b87f2894ed301f9ea013bf6e00474ba67c8416ecf53efe47c64360ac93f19b2162608aa33f6d2f145">
-    <title>NumMelee</title>
-    <meta name="description" content="Celo · Medal Challenge" />
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="talentapp:project_verification" content="67a752d58672d6e527d4aa8cdc861daf3c66fc32c9bd092b87f2894ed301f9ea013bf6e00474ba67c8416ecf53efe47c64360ac93f19b2162608aa33f6d2f145">
+  <title>NumMelee</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="scanlines"></div>
+  <canvas id="particles" aria-hidden="true"></canvas>
+
+  <!-- ── Header ─────────────────────────────────────────────────────── -->
+  <header class="hdr">
+    <div class="hdr-brand">
+      <h1 class="hdr-title">
+        <span class="hdr-num">NUM</span><span class="hdr-melee">MELEE</span>
+      </h1>
+      <p class="hdr-sub">Celo&nbsp;·&nbsp;Medal&nbsp;Challenge</p>
+    </div>
+
+    <nav class="hdr-nav">
+      <button class="nav-btn nav-btn--on" id="btn-play"  onclick="setTab('play')">🎮 Play</button>
+      <button class="nav-btn"             id="btn-board" onclick="setTab('leaderboard')">🏆 Board</button>
+    </nav>
+
+    <div class="hdr-row">
+      <span class="hdr-medal hdr-d">💎 <span id="med-diamond">0</span></span>
+      <span class="hdr-medal hdr-g">🥇 <span id="med-gold">0</span></span>
+      <span class="hdr-medal hdr-s">🥈 <span id="med-silver">0</span></span>
+      <span id="wallet-section">
+        <span class="hdr-nowallet">No wallet</span>
+      </span>
+    </div>
+    <div class="hdr-divider"></div>
+  </header>
+
+  <!-- ── Offline banner ─────────────────────────────────────────────── -->
+  <div class="offline" id="offline-banner" style="display:none">
+    <span>📡</span>
+    <div>
+      <p class="offline-title">Backend offline</p>
+      <p class="offline-sub">Run <code>python server.py</code> and refresh.</p>
+    </div>
+  </div>
+
+  <!-- ══════════════════ PLAY TAB ══════════════════ -->
+  <div id="tab-play">
+    <div class="layout">
+
+      <!-- ── Guesses feed (replaces stat grid at top) ──────────────── -->
+      <section class="feed-top" id="feed-top">
+        <div class="feed-top-header">
+          <span class="feed-top-title">FEED</span>
+          <span class="stats-inline">
+            <span class="stat-chip" id="chip-mode" style="display:none"></span>
+            <span class="stat-chip stat-chip--players" id="chip-players" style="display:none"></span>
+            <span class="stat-chip" id="chip-timer" style="display:none"></span>
+            <span class="stat-chip stat-chip--guesses" id="chip-guesses" style="display:none">0 guesses</span>
+          </span>
+        </div>
+        <ul class="feed-rows" id="feed-rows">
+          <li class="feed-row feed-placeholder">
+            <span class="feed-dot">•</span>
+            <span>Nothing yet — join a round to play</span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ── Number stage + embedded input ─────────────────────────── -->
+      <div class="ns" id="number-stage">
+
+        <!-- Top row: mode pill + player count -->
+        <div class="ns-top-row" id="ns-top-row" style="display:none">
+          <span class="ns-pill" id="ns-pill">Solo</span>
+          <span class="ns-players" id="ns-players">1/100</span>
+          <span class="ns-timer" id="ns-timer" style="display:none"></span>
+        </div>
+
+        <!-- Digit boxes — also act as the input display when joined -->
+        <div class="digit-row" id="digit-row">
+          <div class="db" id="d0">?</div>
+          <div class="db" id="d1">?</div>
+          <div class="digit-dot">.</div>
+          <div class="db" id="d2">?</div>
+          <div class="db" id="d3">?</div>
+        </div>
+
+        <!-- Hidden tel input captures keystrokes for auto-decimal -->
+        <!-- Shown only when joined; digit boxes display the value -->
+        <input id="digit-capture"
+               type="tel" inputmode="numeric" pattern="[0-9]*"
+               maxlength="4" autocomplete="off"
+               style="position:absolute;opacity:0;width:1px;height:1px;pointer-events:none"
+               aria-label="Enter your guess digits" />
+
+        <!-- Hint strip (shown after a guess) -->
+        <div class="sh" id="stage-hint" style="display:none">
+          <span class="sh-arrow" id="sh-arrow"></span>
+          <span class="sh-label" id="sh-label"></span>
+          <span class="sh-guess" id="sh-guess"></span>
+        </div>
+
+        <!-- Sub-label -->
+        <p class="ns-sublabel" id="ns-sublabel">range 10.00 – 99.99</p>
+
+        <!-- Send button (shown when joined + digits entered) -->
+        <button class="btn-send" id="btn-send" style="display:none" onclick="handleGuess()">
+          Send ↑
+        </button>
+
+        <!-- Cooldown bar inside stage -->
+        <div class="cd-wrap" id="cd-wrap" style="display:none">
+          <div class="cd-track"><div class="cd-fill" id="cd-fill"></div></div>
+          <span class="cd-label" id="cd-label"></span>
+        </div>
+
+      </div><!-- /ns -->
+
+      <!-- ── Action panel (join button only — guess is in stage) ────── -->
+      <div class="ap" id="action-panel">
+        <p class="ap-notice">Connecting wallet…</p>
+      </div>
+
+    </div><!-- /layout -->
+  </div><!-- /tab-play -->
+
+  <!-- ══════════════════ LEADERBOARD TAB ══════════════════ -->
+  <div id="tab-leaderboard" style="display:none">
+    <div class="lb-page">
+      <h2 class="lb-title">Leaderboard</h2>
+      <div id="lb-content"><p class="lb-msg">Loading…</p></div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
 </html>

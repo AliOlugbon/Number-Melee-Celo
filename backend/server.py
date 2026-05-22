@@ -1,11 +1,15 @@
 """
 NumMelee — server.py
-Serves the frontend (index.html, style.css, app.js) AND all API routes.
+Serves index.html + style.css + app.js AND all /api/* routes.
 
-Run:      python server.py
-Open:     http://localhost:3001
+Key fix: on startup, if a round is active on-chain but we have no secret
+(server was restarted mid-round), we abort that round so players can start
+fresh. Without this, /api/guess always returns "game not ready" after restart.
 
-Install:  pip install flask flask-cors web3 eth-abi python-dotenv
+Run:     python server.py
+Open:    http://localhost:3001
+
+Install: pip install flask flask-cors web3 eth-abi python-dotenv
 
 .env:
   PRIVATE_KEY=0x...
@@ -25,12 +29,11 @@ from eth_abi import encode as abi_encode
 
 load_dotenv()
 
-# ── Flask — serve static files from the same directory as server.py ───────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app      = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
 CORS(app)
 
-# ── Serve frontend ────────────────────────────────────────────────────────────
+# ── Static files ──────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -38,15 +41,13 @@ def index():
 
 @app.route("/<path:filename>")
 def static_files(filename):
-    # Only serve known static files — never expose Python source
-    allowed = {"index.html", "style.css", "app.js"}
-    if filename in allowed:
+    if filename in {"index.html", "style.css", "app.js"}:
         return send_from_directory(BASE_DIR, filename)
     return jsonify({"error": "not found"}), 404
 
 # ── Web3 ──────────────────────────────────────────────────────────────────────
 
-RPC_URL          = os.getenv("RPC_URL")
+RPC_URL          = os.getenv("RPC_URL", "https://forno.celo.org")
 PRIVATE_KEY      = os.getenv("PRIVATE_KEY")
 CONTRACT_ADDRESS = Web3.to_checksum_address(
     os.getenv("CONTRACT_ADDRESS"))
@@ -125,13 +126,13 @@ contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=ABI)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-NUM_MIN      = 1000
-NUM_MAX      = 9999
+NUM_MIN      = 1000   # 10.00 × 100
+NUM_MAX      = 9999   # 99.99 × 100
 COOLDOWN     = 5
 SOLO_TIMEOUT = 300
-MEDAL_NAMES  = {0: "Silver", 1: "Gold", 2: "Diamond"}
+MEDAL_NAMES  = {0:"Silver", 1:"Gold", 2:"Diamond"}
 
-# ── Game state ────────────────────────────────────────────────────────────────
+# ── State ─────────────────────────────────────────────────────────────────────
 
 game = {
     "number_scaled": None, "salt": None, "commitment": None,
@@ -146,7 +147,7 @@ lock = threading.Lock()
 def gen_secret():
     ns       = secrets.randbelow(NUM_MAX - NUM_MIN + 1) + NUM_MIN
     salt_hex = secrets.token_hex(32)
-    encoded  = abi_encode(["uint256", "bytes32"], [ns, bytes.fromhex(salt_hex)])
+    encoded  = abi_encode(["uint256","bytes32"], [ns, bytes.fromhex(salt_hex)])
     cmt      = w3.keccak(encoded).hex()
     return ns, salt_hex, cmt
 
@@ -170,6 +171,31 @@ def reset_game(round_id=0):
         "is_competitive": False, "history": [], "player_guesses": {},
     })
 
+# ── Startup: abort stale round ────────────────────────────────────────────────
+# FIX: if server restarted mid-round, we have no secret but the round is still
+# open on-chain. abort_round() closes it so the next join() starts fresh.
+
+def abort_stale_round_on_startup():
+    """Called once at startup in a background thread."""
+    if not op:
+        print("[startup] No PRIVATE_KEY — cannot abort stale round")
+        return
+    try:
+        time.sleep(2)  # let Flask start first
+        info  = contract.functions.get_round().call()
+        phase = info[1]
+        rid   = info[0]
+        if phase in (0, 1):
+            print(f"[startup] Stale round #{rid} detected (phase={phase}) — aborting…")
+            receipt = send_tx(contract.functions.abort_round())
+            print(f"[startup] Aborted → {receipt['transactionHash'].hex()[:16]}…")
+            with lock:
+                reset_game(rid)
+        else:
+            print(f"[startup] No stale round (phase={phase}) ✓")
+    except Exception as e:
+        print(f"[startup] abort_stale check failed: {e}")
+
 # ── Solo timer ────────────────────────────────────────────────────────────────
 
 def _solo_timer(round_id, chain_opened_at):
@@ -182,8 +208,8 @@ def _solo_timer(round_id, chain_opened_at):
         info = contract.functions.get_round().call()
         if info[1] < 2:
             receipt = send_tx(contract.functions.abort_round())
-            print(f"[timer] Round #{round_id} aborted → "
-                  f"{receipt['transactionHash'].hex()[:14]}…")
+            print(f"[timer] Round #{round_id} aborted "
+                  f"→ {receipt['transactionHash'].hex()[:14]}…")
             with lock: reset_game(round_id)
     except Exception as e:
         print(f"[timer] abort failed: {e}")
@@ -193,7 +219,7 @@ def start_solo_timer(round_id, chain_opened_at):
         target=_solo_timer, args=[round_id, chain_opened_at], daemon=True
     ).start()
 
-# ── Win helpers ───────────────────────────────────────────────────────────────
+# ── Win ───────────────────────────────────────────────────────────────────────
 
 def _reveal_solo(winner):
     with lock:
@@ -204,7 +230,7 @@ def _reveal_solo(winner):
             Web3.to_checksum_address(winner), ns, bytes.fromhex(salt)))
         print(f"[solo] reveal_win → {winner[:10]}…")
     except Exception as e:
-        print(f"[solo] reveal_win FAILED: {e}")
+        print(f"[solo] reveal FAILED: {e}")
 
 def _reveal_competitive(winner, medal):
     with lock:
@@ -218,13 +244,13 @@ def _reveal_competitive(winner, medal):
         print(f"[competitive] reveal FAILED: {e}")
 
 def handle_correct_guess(player):
-    with lock:
-        comp = game["is_competitive"]
-    fn = _reveal_competitive if comp else _reveal_solo
-    args = [player, 2] if comp else [player]
-    threading.Thread(target=fn, args=args, daemon=True).start()
+    with lock: comp = game["is_competitive"]
+    if comp:
+        threading.Thread(target=_reveal_competitive, args=[player, 2], daemon=True).start()
+    else:
+        threading.Thread(target=_reveal_solo,        args=[player],    daemon=True).start()
 
-# ── Event polling ─────────────────────────────────────────────────────────────
+# ── Events ────────────────────────────────────────────────────────────────────
 
 _last_block = 0
 
@@ -254,7 +280,7 @@ def _evt_opened(fb, tb):
             co  = w3.eth.get_block(log["blockNumber"])["timestamp"]
             with lock:
                 if game["commitment"] and game["commitment"] == cmt:
-                    game["round_id"] = rid
+                    game["round_id"]  = rid
                     game["opened_at"] = time.time()
                     print(f"[event] RoundOpened #{rid} ✓")
                 else:
@@ -287,13 +313,13 @@ def _evt_won(fb, tb):
         for log in contract.events.RoundWon().get_logs(from_block=fb, to_block=tb):
             rid = log["args"]["round_id"]
             print(f"[event] RoundWon #{rid} "
-                  f"medal={MEDAL_NAMES[log['args']['medal']]} "
+                  f"medal={MEDAL_NAMES.get(log['args']['medal'],'?')} "
                   f"number={sc2f(log['args']['number_scaled'])}")
             with lock:
                 if game["round_id"] == rid: reset_game(rid)
     except Exception as e: print(f"[evt_won] {e}")
 
-# ── API routes ────────────────────────────────────────────────────────────────
+# ── API ───────────────────────────────────────────────────────────────────────
 
 @app.route("/api/commitment")
 def api_commitment():
@@ -323,7 +349,7 @@ def api_round():
         "round_id": round_id, "phase": phase,
         "player_count": player_count,
         "opened_at": chain_opened_at, "started_at": started_at,
-        "max_players": 25, "solo_remaining": solo_remaining,
+        "max_players": 100, "solo_remaining": solo_remaining,
         "is_competitive": is_comp,
     })
 
@@ -360,24 +386,30 @@ def api_guess():
         return jsonify({"error": "invalid guess"}), 400
 
     if not (NUM_MIN <= guess_scaled <= NUM_MAX):
-        return jsonify({"error": f"out of range ({sc2f(NUM_MIN)}–{sc2f(NUM_MAX)})"}), 400
+        return jsonify({
+            "error": f"out of range ({sc2f(NUM_MIN)}–{sc2f(NUM_MAX)})"
+        }), 400
 
     with lock:
         if game["number_scaled"] is None:
-            return jsonify({"error": "game not ready"}), 400
+            return jsonify({"error": "game not ready — server restarted, please wait"}), 400
         cooldowns[player] = now
         secret = game["number_scaled"]
         hint   = ("correct" if guess_scaled == secret
                   else "higher" if guess_scaled < secret else "lower")
-        rec = {"idx": len(game["history"]), "player": player,
-               "guess_scaled": guess_scaled, "hint": hint, "timestamp": now}
+        rec = {
+            "idx": len(game["history"]), "player": player,
+            "guess_scaled": guess_scaled, "hint": hint, "timestamp": now,
+        }
         game["history"].append(rec)
         game["player_guesses"].setdefault(player, []).append(guess_scaled)
         is_correct = hint == "correct"
 
     print(f"[guess] {player[:10]}… → {float(guess_str):.2f}  hint={hint}")
     if is_correct:
-        threading.Thread(target=handle_correct_guess, args=[player], daemon=True).start()
+        threading.Thread(
+            target=handle_correct_guess, args=[player], daemon=True
+        ).start()
 
     return jsonify({"hint": hint, "guess_scaled": guess_scaled, "idx": rec["idx"]})
 
@@ -433,13 +465,13 @@ def health():
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
-def _admin_check():
-    if request.headers.get("X-Admin-Key", "") != os.getenv("ADMIN_API_KEY", ""):
+def _check_admin():
+    if request.headers.get("X-Admin-Key","") != os.getenv("ADMIN_API_KEY",""):
         return jsonify({"error": "unauthorized"}), 401
 
 @app.route("/admin/abort", methods=["POST"])
 def admin_abort():
-    err = _admin_check()
+    err = _check_admin()
     if err: return err
     try:
         receipt = send_tx(contract.functions.abort_round())
@@ -450,7 +482,7 @@ def admin_abort():
 
 @app.route("/admin/status")
 def admin_status():
-    err = _admin_check()
+    err = _check_admin()
     if err: return err
     info = contract.functions.get_round().call()
     with lock:
@@ -464,11 +496,14 @@ def admin_status():
 # ── Start ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print(f"NumMelee")
-    print(f"Contract : {CONTRACT_ADDRESS}")
-    print(f"Network  : {RPC_URL}")
-    print(f"Frontend : http://localhost:{PORT}")
-    if op: print(f"Operator : {op.address}")
+    print(f"NumMelee  |  {CONTRACT_ADDRESS}  |  {RPC_URL}")
+    print(f"Open:  http://localhost:{PORT}")
+    if op: print(f"Operator: {op.address}")
     else:  print("WARNING: No PRIVATE_KEY — owner txs disabled")
+
+    # Abort any stale round from a previous server run
+    threading.Thread(target=abort_stale_round_on_startup, daemon=True).start()
+    # Event polling
     threading.Thread(target=poll_events, daemon=True).start()
+
     app.run(host="0.0.0.0", port=PORT, debug=False)
