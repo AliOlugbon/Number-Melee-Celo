@@ -47,10 +47,10 @@ def static_files(filename):
 
 # ── Web3 ──────────────────────────────────────────────────────────────────────
 
-RPC_URL          = os.getenv("RPC_URL", "https://forno.celo.org")
+RPC_URL          = os.getenv("RPC_URL", "https://alfajores-forno.celo-testnet.org")
 PRIVATE_KEY      = os.getenv("PRIVATE_KEY")
 CONTRACT_ADDRESS = Web3.to_checksum_address(
-    os.getenv("CONTRACT_ADDRESS"))
+    os.getenv("CONTRACT_ADDRESS", "0x" + "00" * 20))
 PORT             = int(os.getenv("PORT", 3001))
 
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
