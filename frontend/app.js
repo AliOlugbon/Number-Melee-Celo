@@ -12,6 +12,9 @@ const CUSD             = IS_TESTNET
   ? "0x874069Fa1Eb16D44d622F2e0Ca25eeA172369bC1"
   : "0x765DE816845861e75A25fCA122bb6898B8B1282a";
 
+// Backend URL — set to your deployed Railway/Render URL.
+const API_BASE = "number-melee-celo-production.up.railway.app"; // ← update after deploy
+
 const POLL_ROUND_MS   = 4000;
 const POLL_HISTORY_MS = 3000;
 const SOLO_TIMEOUT    = 300;
