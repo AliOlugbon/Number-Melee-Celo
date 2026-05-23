@@ -13,6 +13,7 @@ const CUSD             = IS_TESTNET
   : "0x765DE816845861e75A25fCA122bb6898B8B1282a";
 
 // Backend URL — set to your deployed Railway/Render URL.
+// Empty string = same origin (works when running server.py locally).
 const API_BASE = "number-melee-celo-production.up.railway.app"; // ← update after deploy
 
 const POLL_ROUND_MS   = 4000;
@@ -79,7 +80,7 @@ function clearJoined(addr, rid) {
 
 // ── API ───────────────────────────────────────────────────────────────────────
 async function api(path, opts={}) {
-  const res  = await fetch(path, opts);
+  const res  = await fetch(API_BASE + path, opts);
   const json = await res.json().catch(()=>({}));
   if (!res.ok) throw Object.assign(new Error(json.error??"api error"),{status:res.status,body:json});
   return json;
