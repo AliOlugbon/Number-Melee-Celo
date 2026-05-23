@@ -14,7 +14,7 @@ const CUSD             = IS_TESTNET
 
 // Backend URL — set to your deployed Railway/Render URL.
 // Empty string = same origin (works when running server.py locally).
-const API_BASE = "number-melee-celo-production.up.railway.app"; // ← update after deploy
+const API_BASE = "https://number-melee-celo-production.up.railway.app"; // ← update after deploy
 
 const POLL_ROUND_MS   = 4000;
 const POLL_HISTORY_MS = 3000;
