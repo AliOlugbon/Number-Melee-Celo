@@ -20,7 +20,7 @@ Install: pip install flask flask-cors web3 eth-abi python-dotenv
 """
 
 import os, secrets, time, threading
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
@@ -29,25 +29,19 @@ from eth_abi import encode as abi_encode
 
 load_dotenv()
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app      = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
-CORS(app)
+app = Flask(__name__)
 
-# ── Static files ──────────────────────────────────────────────────────────────
-
-@app.route("/")
-def index():
-    return send_from_directory(BASE_DIR, "index.html")
-
-@app.route("/<path:filename>")
-def static_files(filename):
-    if filename in {"index.html", "style.css", "app.js"}:
-        return send_from_directory(BASE_DIR, filename)
-    return jsonify({"error": "not found"}), 404
+# Allow Vercel frontend + localhost for local dev
+CORS(app, origins=[
+    "https://number-melee-celo.vercel.app",
+    "http://localhost:3001",
+    "http://localhost:5173",
+    "http://127.0.0.1:3001",
+])
 
 # ── Web3 ──────────────────────────────────────────────────────────────────────
 
-RPC_URL          = os.getenv("RPC_URL", "https://alfajores-forno.celo-testnet.org")
+RPC_URL          = os.getenv("RPC_URL", "https://forno.celo.org")
 PRIVATE_KEY      = os.getenv("PRIVATE_KEY")
 CONTRACT_ADDRESS = Web3.to_checksum_address(
     os.getenv("CONTRACT_ADDRESS", "0x" + "00" * 20))
@@ -349,7 +343,7 @@ def api_round():
         "round_id": round_id, "phase": phase,
         "player_count": player_count,
         "opened_at": chain_opened_at, "started_at": started_at,
-        "max_players": 100, "solo_remaining": solo_remaining,
+        "max_players": 25, "solo_remaining": solo_remaining,
         "is_competitive": is_comp,
     })
 
@@ -427,28 +421,67 @@ def api_cooldown():
 
 @app.route("/api/leaderboard")
 def api_leaderboard():
+    """
+    Build leaderboard two ways and merge:
+    1. Scan MedalAwarded events from block 0 in chunks of 10k
+       (avoids RPC range limits; finds all medals regardless of when deployed)
+    2. Direct get_medals() for addresses seen in game history
+       (catches players who just won before event scan catches up)
+    """
+    pm = {}  # addr_lower -> {address, silver, gold, diamond}
+
+    # Method 1: event scan from deploy block in 10k chunks
     try:
-        from_block = max(0, w3.eth.block_number - 50_000)
-        logs = contract.events.MedalAwarded().get_logs(
-            from_block=from_block, to_block="latest")
-        pm = {}
-        for log in logs:
-            addr = log["args"]["player"].lower()
-            pm[addr] = {
-                "address": log["args"]["player"],
-                "silver":  log["args"]["silver"],
-                "gold":    log["args"]["gold"],
-                "diamond": log["args"]["diamond"],
-            }
-        ranked = sorted(
-            pm.values(),
-            key=lambda x: (x["diamond"], x["gold"], x["silver"]),
-            reverse=True,
-        )[:50]
-        for i, p in enumerate(ranked): p["rank"] = i + 1
-        return jsonify({"players": ranked, "total": len(ranked)})
+        latest   = w3.eth.block_number
+        CHUNK    = 10_000
+        from_blk = int(os.getenv("DEPLOY_BLOCK", "0"))
+        while from_blk <= latest:
+            to_blk = min(from_blk + CHUNK - 1, latest)
+            try:
+                logs = contract.events.MedalAwarded().get_logs(
+                    from_block=from_blk, to_block=to_blk)
+                for log in logs:
+                    addr = log["args"]["player"].lower()
+                    pm[addr] = {
+                        "address": log["args"]["player"],
+                        "silver":  log["args"]["silver"],
+                        "gold":    log["args"]["gold"],
+                        "diamond": log["args"]["diamond"],
+                    }
+            except Exception as ce:
+                print(f"[lb] chunk {from_blk}-{to_blk}: {ce}")
+            from_blk = to_blk + 1
     except Exception as e:
-        return jsonify({"error": str(e), "players": []}), 500
+        print(f"[lb] scan failed: {e}")
+
+    # Method 2: direct contract reads for addresses in this session
+    try:
+        with lock:
+            seen = {r["player"] for r in game["history"]}
+        for addr_lower in seen:
+            if addr_lower in pm:
+                continue
+            try:
+                cs = Web3.to_checksum_address(addr_lower)
+                r  = contract.functions.get_medals(cs).call()
+                if any(v > 0 for v in r):
+                    pm[addr_lower] = {
+                        "address": cs,
+                        "silver": r[0], "gold": r[1], "diamond": r[2],
+                    }
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[lb] direct reads failed: {e}")
+
+    ranked = sorted(
+        pm.values(),
+        key=lambda x: (x["diamond"], x["gold"], x["silver"]),
+        reverse=True,
+    )[:50]
+    for i, p in enumerate(ranked):
+        p["rank"] = i + 1
+    return jsonify({"players": ranked, "total": len(ranked)})
 
 @app.route("/api/medals/<address>")
 def api_medals(address):
@@ -485,25 +518,3 @@ def admin_status():
     err = _check_admin()
     if err: return err
     info = contract.functions.get_round().call()
-    with lock:
-        return jsonify({
-            "round_id": info[0], "phase": info[1], "player_count": info[2],
-            "is_competitive": game["is_competitive"],
-            "has_secret": game["number_scaled"] is not None,
-            "history_len": len(game["history"]),
-        })
-
-# ── Start ─────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    print(f"NumMelee  |  {CONTRACT_ADDRESS}  |  {RPC_URL}")
-    print(f"Open:  http://localhost:{PORT}")
-    if op: print(f"Operator: {op.address}")
-    else:  print("WARNING: No PRIVATE_KEY — owner txs disabled")
-
-    # Abort any stale round from a previous server run
-    threading.Thread(target=abort_stale_round_on_startup, daemon=True).start()
-    # Event polling
-    threading.Thread(target=poll_events, daemon=True).start()
-
-    app.run(host="0.0.0.0", port=PORT, debug=False)
